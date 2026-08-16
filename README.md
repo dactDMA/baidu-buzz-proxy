@@ -110,9 +110,13 @@ environment variable. When configured, the deployment stores it in a file inside
 mode-`700` host directory and mounts only that file read-only into the container. The
 container refreshes BaiduPCS-Go login state when the cookie changes or the saved session
 expires. Its value uses the one-line `BDUSS=...; STOKEN=...` format without a `Cookie:`
-prefix or surrounding quotes. Leaving it empty preserves manual BaiduPCS-Go login behavior.
+prefix or surrounding quotes. A valid Baidu login is required for transfers. Leaving the
+secret empty works only when BaiduPCS-Go was logged in manually in the persistent volume.
 See [VPS deployment](docs/VPS_DEPLOYMENT.md#baidu-cookie-format) for the complete GitHub
 secret list and cookie examples.
+
+Cloudflare Turnstile is optional. Leave both Turnstile settings empty to run without a
+CAPTCHA, or configure the matching site and secret keys together.
 
 ## Persistent data
 

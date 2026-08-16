@@ -65,12 +65,23 @@ Add the application secrets to the same `production` environment:
 | `BBP_ADMIN_ACCESS_TOKEN` | Yes | Long administrator password |
 | `BBP_ADMIN_JWT_SECRET` | No | Independent random signing key |
 | `BBP_BUZZHEAVIER_ACCESS_TOKEN` | No | Token for account-owned uploads |
-| `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key |
-| `BBP_BAIDU_COOKIES` | No | One-line Baidu cookie value, without the `Cookie:` prefix |
+| `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key; leave empty when Turnstile is disabled |
+| `BBP_BAIDU_COOKIES` | Conditional | Baidu login cookie; required unless BaiduPCS-Go is logged in manually on the VPS |
+
+The service cannot import or download files until BaiduPCS-Go is authenticated. The
+recommended unattended setup is to provide `BBP_BAIDU_COOKIES`. You may omit it only after
+completing the manual persistent-volume login described in
+[Authenticate Baidu and configure Buzzheavier](#6-authenticate-baidu-and-configure-buzzheavier).
 
 `BBP_ADMIN_JWT_SECRET` may be left unset. In that case, the application derives its JWT
 signing key from `BBP_ADMIN_ACCESS_TOKEN`. `BBP_BUZZHEAVIER_ACCESS_TOKEN` may also be left
 unset because anonymous Buzzheavier uploads are supported.
+
+Cloudflare Turnstile is optional. If you do not have Turnstile keys, leave both
+`BBP_TURNSTILE_SITE_KEY` and `BBP_TURNSTILE_SECRET_KEY` unset or empty; job creation will
+work without a CAPTCHA. To enable it later, create a Turnstile widget and configure both
+values together. Configuring only the secret key blocks job creation because the browser
+cannot produce a Turnstile response without the matching site key.
 
 ### Baidu cookie format
 
