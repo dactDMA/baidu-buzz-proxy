@@ -87,6 +87,43 @@ jobs:
             exit 1
           fi
 
+          retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=3
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                echo "SSH operation failed after $attempt attempts" >&2
+                return 1
+              fi
+              echo "SSH operation failed; retrying in ${delay}s ($attempt/$max_attempts)" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          ssh_options=(
+            -p "$VPS_PORT"
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o ConnectionAttempts=3
+            -o IdentitiesOnly=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+            -o StrictHostKeyChecking=yes
+          )
+          scp_options=(
+            -P "$VPS_PORT"
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o ConnectionAttempts=3
+            -o IdentitiesOnly=yes
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+            -o StrictHostKeyChecking=yes
+          )
+
           runtime_dir="$RUNNER_TEMP/bbp-runtime"
           install -d -m 700 "$runtime_dir"
           runtime_env="$runtime_dir/runtime.env"
@@ -126,20 +163,15 @@ jobs:
           printf '%s' "$BAIDU_PCS_CONFIG" > "$pcs_config_file"
 
           remote_dir=/opt/baidu-buzz-proxy
-          ssh -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+          retry ssh "${ssh_options[@]}" "$VPS_USER@$VPS_HOST" \
             "install -d -m 700 '$remote_dir/.runtime-secrets'"
-          scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes "$runtime_env" \
+          retry scp "${scp_options[@]}" "$runtime_env" \
             "$VPS_USER@$VPS_HOST:$remote_dir/.runtime.env.tmp"
-          scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes "$cookie_file" \
+          retry scp "${scp_options[@]}" "$cookie_file" \
             "$VPS_USER@$VPS_HOST:$remote_dir/.runtime-secrets/baidu-cookies.tmp"
-          scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes "$pcs_config_file" \
+          retry scp "${scp_options[@]}" "$pcs_config_file" \
             "$VPS_USER@$VPS_HOST:$remote_dir/.runtime-secrets/baidu-pcs-config.tmp"
-          ssh -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+          ssh "${ssh_options[@]}" "$VPS_USER@$VPS_HOST" \
             "chmod 600 '$remote_dir/.runtime.env.tmp' \
               '$remote_dir/.runtime-secrets/baidu-cookies.tmp' \
               '$remote_dir/.runtime-secrets/baidu-pcs-config.tmp' && \
@@ -170,7 +202,10 @@ jobs:
             -p "$VPS_PORT" \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
+            -o ConnectionAttempts=3 \
             -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" \
             "bash -s -- '$RELEASE_IMAGE' '$RELEASE_SHA'" \
