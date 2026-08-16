@@ -16,7 +16,7 @@ small Linux VPS.
 - Stream ZIP64 archives without compression while preserving folder structure
 - Limit concurrent jobs and reserve configurable Baidu account storage
 - Keep temporary job pages for the lifetime of the resulting Buzzheavier upload
-- Cancel jobs with a creator secret or administrator session
+- Review, filter, open, and cancel recent jobs from the administrator dashboard
 - Run as a non-root user in a read-only Alpine-based container
 - Persist application state and BaiduPCS-Go configuration in Docker volumes
 
@@ -57,6 +57,11 @@ docker compose up -d --build
 
 Open <http://127.0.0.1:8080>. API documentation is available at
 <http://127.0.0.1:8080/docs>.
+
+The administrator dashboard is available at <http://127.0.0.1:8080/admin>. Sign in with
+the value configured in `BBP_ADMIN_ACCESS_TOKEN`. The browser receives an HttpOnly
+administrator session cookie valid for 12 hours; the access token is not stored by the
+page.
 
 Authenticate the persisted BaiduPCS-Go installation before creating the first job:
 

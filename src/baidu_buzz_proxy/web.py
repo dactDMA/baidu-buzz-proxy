@@ -9,10 +9,10 @@ font:16px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--text)}main{w
 calc(100% - 32px));margin:8vh auto}h1{font-size:clamp(2rem,7vw,4.5rem);line-height:1;
 letter-spacing:-.05em;margin:0 0 18px}.lead,.muted{color:var(--muted)}.panel{background:var(--panel);
 border:1px solid var(--line);border-radius:14px;padding:22px;margin:24px 0}label{display:block;
-font-weight:650;margin:14px 0 6px}input[type=text],input[type=url]{width:100%;padding:13px 14px;
+font-weight:650;margin:14px 0 6px}input[type=text],input[type=url],input[type=password],select{width:100%;padding:13px 14px;
 border:1px solid var(--line);border-radius:9px;background:#10120e;color:var(--text);font:inherit}
 button,.button{display:inline-block;border:0;border-radius:9px;padding:12px 18px;background:var(--accent);
-color:#172006;font:700 15px system-ui;cursor:pointer;text-decoration:none}button.secondary{background:#2b3026;
+color:#172006;font:700 15px system-ui;cursor:pointer;text-decoration:none}button.secondary,.button.secondary{background:#2b3026;
 color:var(--text)}button.danger{background:var(--danger);color:#250504}button:disabled{opacity:.5;
 cursor:not-allowed}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.between{justify-content:
 space-between}.status{font-size:1.2rem;font-weight:700}.error{color:#ff9a97;white-space:pre-wrap}
@@ -26,6 +26,15 @@ animation:progress-slide 1.25s ease-in-out infinite}@keyframes progress-slide{fr
 to{transform:translateX(315%)}}@media(prefers-reduced-motion:reduce){.progress-track.indeterminate .progress-fill{
 animation-duration:2.5s}.progress-fill{transition:none}}code{overflow-wrap:anywhere}
 footer{color:var(--muted);margin:40px 0}a{color:var(--accent)}
+.admin-toolbar{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}.metric{padding:15px;
+border:1px solid var(--line);border-radius:10px;background:#141711}.metric strong{display:block;font-size:1.6rem}
+.job-card{border:1px solid var(--line);border-radius:12px;padding:16px;margin:12px 0;background:var(--panel)}
+.job-card h2{font-size:1.05rem;margin:0;overflow-wrap:anywhere}.badge{display:inline-block;padding:3px 8px;
+border-radius:999px;background:#31372a;color:var(--text);font-size:.8rem;font-weight:700}.badge.completed{color:#172006;
+background:var(--accent)}.badge.failed,.badge.cancelled{background:#522523;color:#ffd1cf}.job-meta{display:flex;
+gap:12px;flex-wrap:wrap;color:var(--muted);font-size:.9rem}.mini-progress{height:7px;margin:12px 0;background:#0d0f0c;
+border-radius:999px;overflow:hidden}.mini-progress span{display:block;height:100%;background:var(--accent)}
+@media(max-width:650px){.admin-toolbar{grid-template-columns:repeat(2,1fr)}}
 """
 
 
@@ -83,3 +92,39 @@ async function refresh(){{try{{const response=await fetch('/api/jobs/'+id);const
 document.getElementById('start').onclick=async()=>{{error.textContent='';const chosen=[...items.querySelectorAll('input:checked')].map(x=>Number(x.value));const response=await fetch('/api/jobs/'+id+'/selection',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{creator_key:key,item_ids:chosen,select_all:document.getElementById('all').checked,output_name:document.getElementById('name').value}})}});const data=await response.json();if(!response.ok){{error.textContent=data.detail||'Could not start transfer';return;}}selection.hidden=true;refresh();}};
 cancel.onclick=async()=>{{if(!confirm('Cancel this job?'))return;const response=await fetch('/api/jobs/'+id+'/cancel',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{creator_key:key}})}});const data=await response.json();if(!response.ok)error.textContent=data.detail||'Could not cancel job';else refresh();}};refresh();
 </script></body></html>"""
+
+
+def admin_html() -> str:
+    return (
+        """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin · Baidu Buzz Proxy</title><style>"""
+        + _STYLE
+        + """</style></head><body><main>
+<p><a href="/">← New transfer</a></p><h1>Admin</h1>
+<section id="login" class="panel" hidden><h2>Administrator sign in</h2>
+<form id="login-form"><label for="token">Access token</label><input id="token" type="password" autocomplete="current-password" required>
+<p><button type="submit">Sign in</button></p><p id="login-error" class="error"></p></form></section>
+<section id="dashboard" hidden><div class="row between"><div><strong>Recent jobs</strong><p class="muted">Up to 100 newest jobs</p></div>
+<div class="row"><button id="refresh" class="secondary">Refresh</button><button id="logout" class="secondary">Sign out</button></div></div>
+<div class="admin-toolbar"><div class="metric"><strong id="total">0</strong>Total</div><div class="metric"><strong id="active">0</strong>Active</div>
+<div class="metric"><strong id="complete">0</strong>Completed</div><div class="metric"><strong id="failed">0</strong>Failed</div></div>
+<label for="filter">Filter</label><select id="filter"><option value="all">All jobs</option><option value="active">Active</option>
+<option value="completed">Completed</option><option value="failed">Failed or cancelled</option></select>
+<p id="dashboard-error" class="error"></p><div id="jobs"></div></section></main>
+<script>
+const login=document.getElementById('login'),dashboard=document.getElementById('dashboard'),loginError=document.getElementById('login-error'),dashboardError=document.getElementById('dashboard-error'),jobsRoot=document.getElementById('jobs'),filter=document.getElementById('filter');
+const terminal=new Set(['completed','failed','cancelled']);let currentJobs=[],refreshTimer;
+function bytes(n){if(!n)return '0 B';const units=['B','KiB','MiB','GiB','TiB'];const index=Math.min(Math.floor(Math.log(n)/Math.log(1024)),4);return (n/1024**index).toFixed(index?2:0)+' '+units[index];}
+function date(value){return new Date(value).toLocaleString();}
+function element(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;}
+function showLogin(){clearTimeout(refreshTimer);login.hidden=false;dashboard.hidden=true;document.getElementById('token').focus();}
+function matches(job){if(filter.value==='active')return !terminal.has(job.state);if(filter.value==='completed')return job.state==='completed';if(filter.value==='failed')return job.state==='failed'||job.state==='cancelled';return true;}
+function render(){jobsRoot.textContent='';const visible=currentJobs.filter(matches);if(!visible.length){jobsRoot.append(element('p','muted','No matching jobs.'));return;}for(const job of visible){const card=element('article','job-card');const top=element('div','row between');const title=element('h2','',job.output_name||job.id);const badge=element('span','badge '+job.state,job.state.replaceAll('_',' '));top.append(title,badge);card.append(top);const meta=element('div','job-meta');meta.append(element('span','',job.id),element('span','',date(job.created_at)),element('span','',bytes(job.transferred_bytes)+' / '+bytes(job.total_bytes)));card.append(meta,element('p','muted',job.status||''));if(job.total_bytes){const track=element('div','mini-progress');const fill=element('span');fill.style.width=Math.min(100,job.transferred_bytes/job.total_bytes*100)+'%';track.append(fill);card.append(track);}if(job.error)card.append(element('p','error',job.error));const actions=element('div','row');const open=element('a','button','Open job');open.href='/jobs/'+job.id;actions.append(open);if(job.result_url){const result=element('a','button secondary','Open result');result.href=job.result_url;result.target='_blank';result.rel='noopener noreferrer';actions.append(result);}if(!terminal.has(job.state)){const cancel=element('button','danger',job.cancel_requested?'Cancellation requested':'Cancel');cancel.disabled=job.cancel_requested;cancel.onclick=()=>cancelJob(job.id);actions.append(cancel);}card.append(actions);jobsRoot.append(card);}}
+function updateStats(){document.getElementById('total').textContent=currentJobs.length;document.getElementById('active').textContent=currentJobs.filter(job=>!terminal.has(job.state)).length;document.getElementById('complete').textContent=currentJobs.filter(job=>job.state==='completed').length;document.getElementById('failed').textContent=currentJobs.filter(job=>job.state==='failed'||job.state==='cancelled').length;}
+async function loadJobs(){clearTimeout(refreshTimer);try{const response=await fetch('/api/admin/jobs');if(response.status===403){showLogin();return;}const data=await response.json();if(!response.ok)throw new Error(data.detail||'Could not load jobs');login.hidden=true;dashboard.hidden=false;dashboardError.textContent='';currentJobs=data.jobs;updateStats();render();refreshTimer=setTimeout(loadJobs,currentJobs.some(job=>!terminal.has(job.state))?2000:10000);}catch(error){dashboardError.textContent=error.message;refreshTimer=setTimeout(loadJobs,5000);}}
+async function cancelJob(id){if(!confirm('Cancel this job?'))return;dashboardError.textContent='';const response=await fetch('/api/jobs/'+id+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({creator_key:''})});const data=await response.json();if(!response.ok){dashboardError.textContent=data.detail||'Could not cancel job';return;}await loadJobs();}
+document.getElementById('login-form').onsubmit=async event=>{event.preventDefault();loginError.textContent='';const response=await fetch('/api/admin/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({access_token:document.getElementById('token').value})});if(!response.ok){const data=await response.json();loginError.textContent=data.detail||'Sign in failed';return;}document.getElementById('token').value='';await loadJobs();};
+document.getElementById('logout').onclick=async()=>{await fetch('/api/admin/session',{method:'DELETE'});showLogin();};document.getElementById('refresh').onclick=loadJobs;filter.onchange=render;loadJobs();
+</script></body></html>"""
+    )

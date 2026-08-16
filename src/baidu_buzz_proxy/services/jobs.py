@@ -120,6 +120,11 @@ class JobService:
                 raise JobNotFound("Job not found")
             return job
 
+    async def list_recent_jobs(self, limit: int = 100) -> list[Job]:
+        async with self.database.sessions() as session:
+            result = await session.execute(select(Job).order_by(Job.created_at.desc()).limit(limit))
+            return list(result.scalars())
+
     async def select_items(
         self,
         public_id: str,

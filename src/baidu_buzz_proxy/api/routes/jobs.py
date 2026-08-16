@@ -42,6 +42,11 @@ def _is_admin(request: Request, settings: Settings) -> bool:
     return bool(token and admin_token and verify_admin_jwt(token, key))
 
 
+def _require_admin(request: Request, settings: Settings) -> None:
+    if not _is_admin(request, settings):
+        raise HTTPException(status_code=403, detail="Administrator session required")
+
+
 def _job_payload(job: Job) -> dict[str, Any]:
     return {
         "id": job.public_id,
@@ -165,3 +170,30 @@ async def admin_logout() -> Response:
     response = Response(status_code=204)
     response.delete_cookie("bbp_admin", path="/")
     return response
+
+
+@router.get("/admin/jobs")
+async def admin_jobs(request: Request) -> dict[str, Any]:
+    jobs, settings = _services(request)
+    _require_admin(request, settings)
+    recent_jobs = await jobs.list_recent_jobs(limit=100)
+    return {
+        "jobs": [
+            {
+                "id": job.public_id,
+                "state": job.state,
+                "status": job.status_message,
+                "error": job.error_message,
+                "output_name": job.output_name,
+                "total_bytes": job.total_bytes,
+                "transferred_bytes": job.transferred_bytes,
+                "result_url": job.result_url,
+                "cancel_requested": job.cancel_requested,
+                "cleanup_completed": job.cleanup_completed,
+                "created_at": job.created_at,
+                "updated_at": job.updated_at,
+                "expires_at": job.expires_at,
+            }
+            for job in recent_jobs
+        ]
+    }
