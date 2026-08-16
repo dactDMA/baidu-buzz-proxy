@@ -310,10 +310,23 @@ class JobService:
         await self._set_message(public_id, "Starting the Buzzheavier upload")
 
         selected_directories = any(item.selected and item.is_dir for item in job.items)
+        segment_size = self.settings.baidu_range_size_mib * 1024**2
+        concurrency = self.settings.baidu_download_concurrency
+        retries = self.settings.baidu_download_retries
         stream = (
-            stream_baidu_file(sources[0])
+            stream_baidu_file(
+                sources[0],
+                segment_size=segment_size,
+                concurrency=concurrency,
+                retries=retries,
+            )
             if len(sources) == 1 and not selected_directories
-            else build_zip_stream(sources)
+            else build_zip_stream(
+                sources,
+                segment_size=segment_size,
+                concurrency=concurrency,
+                retries=retries,
+            )
         )
 
         async def progress(value: int) -> None:

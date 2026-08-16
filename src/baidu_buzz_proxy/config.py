@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     turnstile_site_key: str = ""
     turnstile_secret_key: SecretStr = SecretStr("")
     baidu_reserve_gib: int = Field(default=300, ge=0)
+    baidu_download_concurrency: int = Field(default=10, ge=1, le=20)
+    baidu_range_size_mib: int = Field(default=16, ge=4, le=128)
+    baidu_download_retries: int = Field(default=5, ge=0, le=10)
     max_active_jobs: int = Field(default=2, ge=1, le=32)
     max_pending_jobs: int = Field(default=100, ge=1, le=10000)
     job_page_ttl_days: int = Field(default=8, ge=1, le=365)
