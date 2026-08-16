@@ -6,6 +6,18 @@ class CreateJobRequest(BaseModel):
     extraction_code: str = Field(default="", max_length=16)
     turnstile_token: str = Field(default="", max_length=4096)
 
+    @field_validator("share_url", mode="before")
+    @classmethod
+    def add_default_scheme(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if normalized.startswith("//"):
+            return f"https:{normalized}"
+        if "://" not in normalized:
+            return f"https://{normalized}"
+        return normalized
+
     @field_validator("share_url")
     @classmethod
     def validate_baidu_host(cls, value: HttpUrl) -> HttpUrl:

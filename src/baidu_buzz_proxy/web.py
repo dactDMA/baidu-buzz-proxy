@@ -36,7 +36,7 @@ def index_html(turnstile_site_key: str) -> str:
 <title>Baidu Buzz Proxy</title><style>{_STYLE}</style>{script}</head><body><main>
 <h1>Baidu to Buzz.</h1><p class="lead">Transfer a public Baidu Netdisk share to Buzzheavier. No Baidu account is required for visitors.</p>
 <form id="create" class="panel"><label for="url">Public Baidu share URL</label>
-<input id="url" type="url" required placeholder="https://pan.baidu.com/s/..."><label for="code">Extraction code</label>
+<input id="url" type="text" inputmode="url" autocomplete="url" required placeholder="pan.baidu.com/s/... (https:// optional)"><label for="code">Extraction code</label>
 <input id="code" type="text" maxlength="16" placeholder="Optional when included in the URL">{turnstile}
 <p><button id="submit" type="submit">Import share</button></p><p id="error" class="error"></p></form>
 <p class="muted">The service first imports the public share into an isolated temporary folder, then lets you choose files. Source data is streamed to Buzzheavier and removed from temporary Baidu storage afterwards.</p>
