@@ -13,10 +13,11 @@ small Linux VPS.
 
 - Browse public Baidu Netdisk shares without exposing Baidu credentials to visitors
 - Transfer individual files or complete folders to Buzzheavier
+- Download each Baidu file with ordered parallel HTTP ranges
 - Stream ZIP64 archives without compression while preserving folder structure
 - Limit concurrent jobs and reserve configurable Baidu account storage
 - Keep temporary job pages for the lifetime of the resulting Buzzheavier upload
-- Cancel jobs with a creator secret or administrator session
+- Review, filter, open, and cancel recent jobs from the administrator dashboard
 - Run as a non-root user in a read-only Alpine-based container
 - Persist application state and BaiduPCS-Go configuration in Docker volumes
 
@@ -58,6 +59,11 @@ docker compose up -d --build
 Open <http://127.0.0.1:8080>. API documentation is available at
 <http://127.0.0.1:8080/docs>.
 
+The administrator dashboard is available at <http://127.0.0.1:8080/admin>. Sign in with
+the value configured in `BBP_ADMIN_ACCESS_TOKEN`. The browser receives an HttpOnly
+administrator session cookie valid for 12 hours; the access token is not stored by the
+page.
+
 Authenticate the persisted BaiduPCS-Go installation before creating the first job:
 
 ```sh
@@ -97,11 +103,18 @@ Production deployments can additionally synchronize these values from the GitHub
 | `BBP_TURNSTILE_SITE_KEY` | Cloudflare Turnstile public site key | Empty |
 | `BBP_TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key | Empty |
 | `BBP_BAIDU_RESERVE_GIB` | Baidu storage that must remain unused | `300` |
+| `BBP_BAIDU_DOWNLOAD_CONCURRENCY` | Parallel Baidu range requests per file | `10` |
+| `BBP_BAIDU_RANGE_SIZE_MIB` | In-memory size of each ordered Baidu range | `16` |
+| `BBP_BAIDU_DOWNLOAD_RETRIES` | Retry count for a failed Baidu range | `5` |
 | `BBP_MAX_ACTIVE_JOBS` | Maximum number of simultaneous jobs | `2` |
 | `BBP_MAX_PENDING_JOBS` | Maximum number of queued or waiting jobs | `100` |
 | `BBP_JOB_PAGE_TTL_DAYS` | Completed job page retention | `8` |
 | `BBP_FAILED_JOB_TTL_HOURS` | Failed job retention | `24` |
 | `BBP_STALLED_JOB_TIMEOUT_HOURS` | Timeout for stalled jobs | `24` |
+
+Parallel Baidu downloads buffer at most one range per connection. The defaults use up to
+about 160 MiB of range buffers per active job (`10 × 16 MiB`) in addition to Buzzheavier
+multipart buffers. Reduce concurrency or range size on memory-constrained hosts.
 
 Never commit `.env`, BaiduPCS-Go configuration, Baidu cookies, Buzzheavier credentials, or
 administrator tokens.

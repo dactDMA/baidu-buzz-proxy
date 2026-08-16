@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +21,7 @@ class UploadSession:
 
 
 ProgressCallback = Callable[[int], Awaitable[None]]
+PartProgressCallback = Callable[[int], Awaitable[None]]
 CancelCallback = Callable[[], Awaitable[bool]]
 
 
@@ -69,9 +71,30 @@ class BuzzMultipartClient:
         is_cancelled: CancelCallback,
     ) -> str:
         session = await self.create_upload(name)
-        inflight: set[asyncio.Task[int]] = set()
+        inflight: set[asyncio.Task[tuple[int, int]]] = set()
         part_number = 1
-        uploaded = 0
+        confirmed = 0
+        part_progress: dict[int, int] = {}
+        progress_lock = asyncio.Lock()
+        last_report_at = 0.0
+
+        async def report_part(number: int, sent: int) -> None:
+            nonlocal last_report_at
+            async with progress_lock:
+                part_progress[number] = max(part_progress.get(number, 0), sent)
+                now = time.monotonic()
+                if now - last_report_at < 0.75:
+                    return
+                last_report_at = now
+                await progress(confirmed + sum(part_progress.values()))
+
+        async def confirm_part(number: int, size: int) -> None:
+            nonlocal confirmed, last_report_at
+            async with progress_lock:
+                part_progress.pop(number, None)
+                confirmed += size
+                last_report_at = time.monotonic()
+                await progress(confirmed + sum(part_progress.values()))
 
         try:
             async for part in self._parts(stream):
@@ -82,15 +105,28 @@ class BuzzMultipartClient:
                         inflight, return_when=asyncio.FIRST_COMPLETED
                     )
                     for task in completed:
-                        uploaded += task.result()
-                        await progress(uploaded)
-                inflight.add(asyncio.create_task(self._upload_part(session, part_number, part)))
+                        completed_number, completed_size = task.result()
+                        await confirm_part(completed_number, completed_size)
+                current_number = part_number
+
+                async def report_current(sent: int, number: int = current_number) -> None:
+                    await report_part(number, sent)
+
+                inflight.add(
+                    asyncio.create_task(
+                        self._upload_part(
+                            session,
+                            current_number,
+                            part,
+                            report_current,
+                        )
+                    )
+                )
                 part_number += 1
 
             if inflight:
-                for size in await asyncio.gather(*inflight):
-                    uploaded += size
-                    await progress(uploaded)
+                for completed_number, completed_size in await asyncio.gather(*inflight):
+                    await confirm_part(completed_number, completed_size)
                 inflight.clear()
         finally:
             for task in inflight:
@@ -114,7 +150,13 @@ class BuzzMultipartClient:
         file_id = data.get("id") or data.get("fileId") or session.upload_id
         return urljoin(self.base_url, str(file_id))
 
-    async def _upload_part(self, session: UploadSession, part_number: int, content: bytes) -> int:
+    async def _upload_part(
+        self,
+        session: UploadSession,
+        part_number: int,
+        content: bytes,
+        progress: PartProgressCallback,
+    ) -> tuple[int, int]:
         for attempt in range(self.retries + 1):
             try:
                 response = await self.client.patch(
@@ -123,16 +165,30 @@ class BuzzMultipartClient:
                         "Upload-Length": str(len(content)),
                         "Upload-Part-Number": str(part_number),
                         "Content-Type": "application/octet-stream",
+                        "Content-Length": str(len(content)),
                     },
-                    content=content,
+                    content=self._stream_part(content, progress),
                 )
                 await self._raise_for_status(response, f"upload part {part_number}")
-                return len(content)
+                return part_number, len(content)
             except (httpx.HTTPError, BuzzheavierError):
                 if attempt >= self.retries:
                     raise
                 await asyncio.sleep(min(2**attempt, 20))
         raise AssertionError("unreachable")
+
+    @staticmethod
+    async def _stream_part(
+        content: bytes,
+        progress: PartProgressCallback,
+        chunk_size: int = 1024 * 1024,
+    ) -> AsyncIterator[bytes]:
+        sent = 0
+        for offset in range(0, len(content), chunk_size):
+            chunk = content[offset : offset + chunk_size]
+            yield chunk
+            sent += len(chunk)
+            await progress(sent)
 
     async def _parts(self, stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
         buffer = bytearray()

@@ -120,6 +120,11 @@ class JobService:
                 raise JobNotFound("Job not found")
             return job
 
+    async def list_recent_jobs(self, limit: int = 100) -> list[Job]:
+        async with self.database.sessions() as session:
+            result = await session.execute(select(Job).order_by(Job.created_at.desc()).limit(limit))
+            return list(result.scalars())
+
     async def select_items(
         self,
         public_id: str,
@@ -287,7 +292,12 @@ class JobService:
         await self._set_state(public_id, JobState.TRANSFERRING, "Resolving Baidu links")
 
         sources: list[SourceFile] = []
-        for item in files:
+        for index, item in enumerate(files, start=1):
+            display_name = item.name if len(item.name) <= 160 else f"{item.name[:157]}..."
+            await self._set_message(
+                public_id,
+                f"Resolving Baidu link {index} of {len(files)}: {display_name}",
+            )
             urls = await self.baidu.locate(item.remote_path)
             sources.append(
                 SourceFile(
@@ -297,11 +307,26 @@ class JobService:
                 )
             )
 
+        await self._set_message(public_id, "Starting the Buzzheavier upload")
+
         selected_directories = any(item.selected and item.is_dir for item in job.items)
+        segment_size = self.settings.baidu_range_size_mib * 1024**2
+        concurrency = self.settings.baidu_download_concurrency
+        retries = self.settings.baidu_download_retries
         stream = (
-            stream_baidu_file(sources[0])
+            stream_baidu_file(
+                sources[0],
+                segment_size=segment_size,
+                concurrency=concurrency,
+                retries=retries,
+            )
             if len(sources) == 1 and not selected_directories
-            else build_zip_stream(sources)
+            else build_zip_stream(
+                sources,
+                segment_size=segment_size,
+                concurrency=concurrency,
+                retries=retries,
+            )
         )
 
         async def progress(value: int) -> None:

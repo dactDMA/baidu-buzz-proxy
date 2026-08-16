@@ -22,3 +22,14 @@ async def test_index() -> None:
 
     assert response.status_code == 200
     assert "Baidu Buzz Proxy" in response.text
+
+
+@pytest.mark.asyncio
+async def test_admin_page() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/admin")
+
+    assert response.status_code == 200
+    assert "Administrator sign in" in response.text
+    assert "Recent jobs" in response.text

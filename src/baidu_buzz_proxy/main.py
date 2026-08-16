@@ -13,7 +13,7 @@ from baidu_buzz_proxy.database import Database
 from baidu_buzz_proxy.services.baidu import BaiduPCSClient
 from baidu_buzz_proxy.services.buzzheavier import BuzzMultipartClient
 from baidu_buzz_proxy.services.jobs import JobService
-from baidu_buzz_proxy.web import index_html, job_html
+from baidu_buzz_proxy.web import admin_html, index_html, job_html
 
 
 @asynccontextmanager
@@ -61,6 +61,10 @@ def create_app() -> FastAPI:
     @app.get("/jobs/{public_id}", response_class=HTMLResponse, include_in_schema=False)
     async def job_page(public_id: str) -> str:
         return job_html(public_id)
+
+    @app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_page() -> str:
+        return admin_html()
 
     return app
 
