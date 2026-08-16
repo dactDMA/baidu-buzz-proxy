@@ -66,12 +66,15 @@ Add the application secrets to the same `production` environment:
 | `BBP_ADMIN_JWT_SECRET` | No | Independent random signing key |
 | `BBP_BUZZHEAVIER_ACCESS_TOKEN` | No | Token for account-owned uploads |
 | `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key; leave empty when Turnstile is disabled |
-| `BBP_BAIDU_COOKIES` | Conditional | Baidu login cookie; required unless BaiduPCS-Go is logged in manually on the VPS |
+| `BBP_BAIDU_PCS_CONFIG` | Recommended | Complete contents of a working BaiduPCS-Go `pcs_config.json` |
+| `BBP_BAIDU_COOKIES` | Fallback | Baidu login cookie; used only when `BBP_BAIDU_PCS_CONFIG` is empty |
 
 The service cannot import or download files until BaiduPCS-Go is authenticated. The
-recommended unattended setup is to provide `BBP_BAIDU_COOKIES`. You may omit it only after
-completing the manual persistent-volume login described in
-[Authenticate Baidu and configure Buzzheavier](#6-authenticate-baidu-and-configure-buzzheavier).
+recommended unattended setup is to provide `BBP_BAIDU_PCS_CONFIG`. This avoids a new login
+during container startup and preserves a custom working PCS endpoint. Cookie login remains
+available as a fallback, but some networks cannot reach the legacy endpoints it uses. You
+may omit both secrets only after completing the manual persistent-volume login described
+in [Authenticate Baidu and configure Buzzheavier](#6-authenticate-baidu-and-configure-buzzheavier).
 
 `BBP_ADMIN_JWT_SECRET` may be left unset. In that case, the application derives its JWT
 signing key from `BBP_ADMIN_ACCESS_TOKEN`. `BBP_BUZZHEAVIER_ACCESS_TOKEN` may also be left
@@ -82,6 +85,25 @@ Cloudflare Turnstile is optional. If you do not have Turnstile keys, leave both
 work without a CAPTCHA. To enable it later, create a Turnstile widget and configure both
 values together. Configuring only the secret key blocks job creation because the browser
 cannot produce a Turnstile response without the matching site key.
+
+### BaiduPCS-Go configuration format
+
+Set `BBP_BAIDU_PCS_CONFIG` to the complete, unmodified contents of a tested
+`pcs_config.json`. On Windows, the default file is:
+
+```text
+C:\Users\your-user\AppData\Roaming\BaiduPCS-Go\pcs_config.json
+```
+
+Before copying it, confirm that `BaiduPCS-Go quota` and `BaiduPCS-Go ls /` work with that
+configuration. For a VPS that cannot connect to `pcs.baidu.com`, configure and test
+`d.pcs.baidu.com` with fixed PCS address selection first. Paste the JSON itself into the
+GitHub secret, including its opening and closing braces; do not paste a path, Markdown code
+fence, or base64 encoding. GitHub supports multiline secret values.
+
+The configuration contains account session credentials and must never be committed. The
+container validates new JSON with a quota request before adopting it. If both Baidu secrets
+are configured, `BBP_BAIDU_PCS_CONFIG` takes precedence and cookie login is skipped.
 
 ### Baidu cookie format
 
@@ -104,9 +126,9 @@ Copy only the value following the `Cookie:` request-header name in browser devel
 Treat the value as an account credential: store it only as a GitHub Environment secret and
 replace it when the Baidu session expires or is revoked.
 
-The workflow transfers the cookie separately and stores it as
-`/opt/baidu-buzz-proxy/.runtime-secrets/baidu-cookies`. The parent directory has mode `700`;
-the file is mounted read-only into the non-root application container.
+The workflow transfers the Baidu secrets separately and stores them under
+`/opt/baidu-buzz-proxy/.runtime-secrets`. The parent directory has mode `700`; each secret
+file is mounted read-only into the non-root application container.
 
 Non-secret settings can be added under **Environment variables**. Missing variables use
 these defaults:
@@ -150,7 +172,7 @@ The deployment workflow:
 
 1. validates the commit and image name;
 2. connects to the VPS with strict SSH host-key checking;
-3. atomically synchronizes GitHub runtime configuration and optional Baidu cookies;
+3. atomically synchronizes GitHub runtime configuration and optional Baidu credentials;
 4. backs up SQLite when an earlier release is running;
 5. pulls the exact `sha-<commit>` image;
 6. waits for all container health checks;
@@ -162,12 +184,12 @@ not survive a complete worker replacement.
 ## 6. Authenticate Baidu and configure Buzzheavier
 
 The application container copies BaiduPCS-Go into the persistent `app-data` volume. When
-`BBP_BAIDU_COOKIES` is configured in GitHub, the container imports it automatically and
-validates account quota before starting. Login repeats only when the cookie changes or the
-saved session is no longer valid. Baidu endpoints can respond slowly or time out
-intermittently, so managed login makes three bounded attempts with short backoff delays.
-Production health checks allow this initialization to finish before judging the container
-unhealthy.
+`BBP_BAIDU_PCS_CONFIG` is configured in GitHub, the container imports it automatically and
+validates account quota before starting. A changed configuration is adopted only after a
+successful validation. If only `BBP_BAIDU_COOKIES` is configured, the container performs
+the legacy cookie login instead. Baidu requests make three bounded attempts with short
+backoff delays. Production health checks allow this initialization to finish before
+judging the container unhealthy.
 
 Without that GitHub secret, log in interactively once after the first deployment:
 
@@ -194,11 +216,12 @@ BBP_ADMIN_ACCESS_TOKEN=replace-with-a-long-admin-password
 BBP_ADMIN_JWT_SECRET=replace-with-an-independent-random-secret
 ```
 
-Create the empty optional-cookie mount before a fully manual Compose deployment:
+Create the empty optional-secret mounts before a fully manual Compose deployment:
 
 ```sh
 install -d -m 700 .runtime-secrets
 install -m 644 /dev/null .runtime-secrets/baidu-cookies
+install -m 644 /dev/null .runtime-secrets/baidu-pcs-config
 ```
 
 The cookie file is readable inside the non-root container but remains protected from other

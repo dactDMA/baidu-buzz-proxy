@@ -103,17 +103,17 @@ Production deployments can additionally synchronize these values from the GitHub
 | `BBP_FAILED_JOB_TTL_HOURS` | Failed job retention | `24` |
 | `BBP_STALLED_JOB_TIMEOUT_HOURS` | Timeout for stalled jobs | `24` |
 
-Never commit `.env`, Baidu cookies, Buzzheavier credentials, or administrator tokens.
+Never commit `.env`, BaiduPCS-Go configuration, Baidu cookies, Buzzheavier credentials, or
+administrator tokens.
 
-`BBP_BAIDU_COOKIES` is a deployment-only GitHub secret rather than an application
-environment variable. When configured, the deployment stores it in a file inside a
-mode-`700` host directory and mounts only that file read-only into the container. The
-container refreshes BaiduPCS-Go login state when the cookie changes or the saved session
-expires. Its value uses the one-line `BDUSS=...; STOKEN=...` format without a `Cookie:`
-prefix or surrounding quotes. A valid Baidu login is required for transfers. Leaving the
-secret empty works only when BaiduPCS-Go was logged in manually in the persistent volume.
-See [VPS deployment](docs/VPS_DEPLOYMENT.md#baidu-cookie-format) for the complete GitHub
-secret list and cookie examples.
+`BBP_BAIDU_PCS_CONFIG` and `BBP_BAIDU_COOKIES` are deployment-only GitHub secrets rather
+than application environment variables. A tested full `pcs_config.json` is preferred; it
+preserves a working custom PCS endpoint and avoids a new login during startup. The cookie
+secret is a fallback when no configuration secret is supplied. A valid Baidu login is
+required for transfers. Leaving both secrets empty works only when BaiduPCS-Go was logged
+in manually in the persistent volume. See
+[VPS deployment](docs/VPS_DEPLOYMENT.md#baidupcs-go-configuration-format) for formats and
+the complete GitHub secret list.
 
 Cloudflare Turnstile is optional. Leave both Turnstile settings empty to run without a
 CAPTCHA, or configure the matching site and secret keys together.
