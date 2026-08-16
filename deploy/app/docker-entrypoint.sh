@@ -7,6 +7,16 @@ baidu_cookies_file=/run/secrets/baidu-cookies
 managed_cookie_digest="$baidu_dir/managed-cookie.sha256"
 baidu_config="$baidu_dir/pcs_config.json"
 managed_login_backup="$baidu_dir/pcs_config.before-managed-login"
+login_attempts="${BBP_MANAGED_LOGIN_ATTEMPTS:-3}"
+login_timeout_seconds="${BBP_MANAGED_LOGIN_TIMEOUT_SECONDS:-45}"
+initial_retry_delay="${BBP_MANAGED_LOGIN_RETRY_DELAY_SECONDS:-5}"
+
+case "$login_attempts:$login_timeout_seconds:$initial_retry_delay" in
+    *[!0-9:]* | 0:* | *:0:*)
+        echo "Managed Baidu login timing configuration is invalid" >&2
+        exit 1
+        ;;
+esac
 
 mkdir -p "$baidu_dir"
 
@@ -15,7 +25,9 @@ if ! cmp -s /usr/local/libexec/BaiduPCS-Go "$baidu_binary"; then
 fi
 
 quota_is_valid() {
-    quota_output="$("$baidu_binary" quota 2>&1)"
+    if ! quota_output="$(timeout "$login_timeout_seconds" "$baidu_binary" quota 2>&1)"; then
+        return 1
+    fi
     case "$quota_output" in
         *"用户名:"*"总空间:"*) return 0 ;;
         *) return 1 ;;
@@ -44,12 +56,33 @@ if [ -f "$baidu_cookies_file" ] && [ -s "$baidu_cookies_file" ]; then
             had_previous_config=1
         fi
         cookies="$(tr -d '\r\n' < "$baidu_cookies_file")"
-        login_succeeded=0
-        if "$baidu_binary" login -cookies="$cookies" >/dev/null 2>&1; then
-            login_succeeded=1
-        fi
+        authenticated=0
+        attempt=1
+        retry_delay="$initial_retry_delay"
+        while [ "$attempt" -le "$login_attempts" ]; do
+            if [ "$had_previous_config" -eq 1 ] && [ -f "$managed_login_backup" ]; then
+                cp -p "$managed_login_backup" "$baidu_config"
+            else
+                rm -f "$baidu_config"
+            fi
+
+            echo "Refreshing managed Baidu login (attempt $attempt/$login_attempts)" >&2
+            if timeout "$login_timeout_seconds" \
+                "$baidu_binary" login -cookies="$cookies" >/dev/null 2>&1 \
+                && quota_is_valid; then
+                authenticated=1
+                break
+            fi
+
+            if [ "$attempt" -lt "$login_attempts" ]; then
+                echo "Baidu did not respond in time; retrying in ${retry_delay}s" >&2
+                sleep "$retry_delay"
+                retry_delay=$((retry_delay * 2))
+            fi
+            attempt=$((attempt + 1))
+        done
         unset cookies
-        if [ "$login_succeeded" -ne 1 ] || ! quota_is_valid; then
+        if [ "$authenticated" -ne 1 ]; then
             if [ "$had_previous_config" -eq 1 ] && [ -f "$managed_login_backup" ]; then
                 mv -f "$managed_login_backup" "$baidu_config"
             else
