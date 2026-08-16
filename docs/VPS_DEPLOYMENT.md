@@ -91,7 +91,7 @@ The deployment workflow:
 Run production deployment only while no long transfer is active. Multipart transfers do
 not survive a complete worker replacement.
 
-## 6. Authenticate the service accounts
+## 6. Authenticate Baidu and configure Buzzheavier
 
 The application container copies BaiduPCS-Go into the persistent `app-data` volume. Log in
 once after the first deployment:
@@ -109,13 +109,17 @@ public-share import command requires it. Do not paste cookies into `.env`, deplo
 GitHub Actions, or a command saved in shell history. BaiduPCS-Go stores its own login state
 under `/app/data/baidu` in the persistent volume.
 
-Set the Buzzheavier account identifier/token in `.env`:
+Buzzheavier accepts anonymous multipart uploads. Leave its token empty unless the resulting
+files should belong to a Buzzheavier account:
 
 ```dotenv
-BBP_BUZZHEAVIER_ACCESS_TOKEN=replace-with-the-account-token
+BBP_BUZZHEAVIER_ACCESS_TOKEN=
 BBP_ADMIN_ACCESS_TOKEN=replace-with-a-long-admin-password
 BBP_ADMIN_JWT_SECRET=replace-with-an-independent-random-secret
 ```
+
+For account-owned uploads, replace the empty Buzzheavier value with that account's token.
+Anonymous mode sends no `Authorization` header.
 
 `BBP_ADMIN_JWT_SECRET` signs the HTTP-only administrator session cookie. It may be left
 empty, in which case the application derives a signing key from `BBP_ADMIN_ACCESS_TOKEN`,

@@ -34,8 +34,10 @@ The default Docker Compose stack contains:
 
 - Docker Engine with the Compose plugin
 - A Baidu Netdisk account that can access the source files
-- A Buzzheavier access token
 - At least 2 GB of RAM for the recommended two concurrent transfer jobs
+
+A Buzzheavier account is optional. With an empty access token, uploads are anonymous and
+the resulting public link is still returned to the job page.
 
 ## Quick start
 
@@ -83,7 +85,7 @@ Configuration is read from `.env`. See [.env.example](.env.example) for the comp
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `BBP_BUZZHEAVIER_ACCESS_TOKEN` | Buzzheavier account access token | Required |
+| `BBP_BUZZHEAVIER_ACCESS_TOKEN` | Optional token for account-owned uploads | Empty (anonymous) |
 | `BBP_BUZZHEAVIER_BASE_URL` | Buzzheavier API origin | `https://buzzheavier.com` |
 | `BBP_BUZZHEAVIER_PART_SIZE_MIB` | Multipart chunk size | `100` |
 | `BBP_BUZZHEAVIER_PART_CONCURRENCY` | Concurrent chunks per job | `2` |
@@ -127,17 +129,19 @@ The application image can be rebuilt or replaced without deleting these volumes.
   recycle bin, and permanently deletes only that recorded item. It never clears the whole
   recycle bin.
 
-Buzzheavier documents account uploads through its upload API. The web uploader currently
+Buzzheavier documents both anonymous and account-owned uploads. Its web uploader currently
 uses a multipart protocol that retries individual chunks; this project implements that
-protocol. Because the multipart endpoint is not part of Buzzheavier's published API
-reference, test a small transfer after upgrades before starting a very large job.
+protocol in anonymous mode by default. Because the multipart endpoint is not part of
+Buzzheavier's published API reference, test a small transfer after upgrades before starting
+a very large job.
 
 ## Security
 
-Use dedicated Baidu and Buzzheavier accounts for a public deployment. Keep all credentials
-on the server, place the service behind HTTPS, enable Turnstile, and apply network-level
-rate limiting. The service should accept only supported Baidu Netdisk URLs and must never
-be exposed as a general-purpose URL proxy.
+Use a dedicated Baidu account for a public deployment. If account-owned Buzzheavier uploads
+are enabled, use a dedicated Buzzheavier account as well. Keep credentials on the server,
+place the service behind HTTPS, enable Turnstile, and apply network-level rate limiting.
+The service should accept only supported Baidu Netdisk URLs and must never be exposed as a
+general-purpose URL proxy.
 
 ## Development
 

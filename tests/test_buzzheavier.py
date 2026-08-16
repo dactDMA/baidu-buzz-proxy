@@ -11,6 +11,7 @@ async def test_multipart_upload_splits_and_completes() -> None:
     uploaded_parts: list[tuple[int, bytes]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
         if request.method == "POST" and request.url.path == "/api/upload":
             return httpx.Response(
                 200,
@@ -36,7 +37,7 @@ async def test_multipart_upload_splits_and_completes() -> None:
 
     client = BuzzMultipartClient(
         "https://buzz.test",
-        "secret",
+        "",
         part_size=5,
         concurrency=2,
         transport=httpx.MockTransport(handler),
