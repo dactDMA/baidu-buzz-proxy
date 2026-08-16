@@ -32,6 +32,14 @@ class BaiduItem:
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _URL_RE = re.compile(r"https?://[^\s|]+")
 _SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?I?B)\s*$", re.I)
+_DATETIME_PATTERN = r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"
+_ALIGNED_LISTING_ROW_RE = re.compile(
+    rf"^\s*\d+\s+(?P<fs_id>\d+)\s+\d+\s+"
+    rf"(?P<size>-|[0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?I?B)\s+"
+    rf"{_DATETIME_PATTERN}\s+{_DATETIME_PATTERN}\s+"
+    r"(?:(?P<md5>[0-9a-f]{32})\s+)?(?P<name>.+?)\s*$",
+    re.I | re.M,
+)
 _SIZE_FACTORS = {
     "B": 1,
     "KB": 1024,
@@ -75,31 +83,40 @@ def parse_detailed_listing(output: str, directory: str, root: str) -> list[Baidu
         (index for index, row in enumerate(rows) if "fs_id" in {cell.lower() for cell in row}),
         None,
     )
-    if header_index is None:
-        raise BaiduError("BaiduPCS-Go returned an unrecognized directory listing")
-
-    header = [cell.lower() for cell in rows[header_index]]
-    fs_index = header.index("fs_id")
-    size_index = next(
-        (index for index, cell in enumerate(header) if cell in {"文件大小", "size"}), None
-    )
-    name_index = len(header) - 1
-    if size_index is None:
-        raise BaiduError("BaiduPCS-Go listing does not contain a size column")
-
     result: list[BaiduItem] = []
-    for row in rows[header_index + 1 :]:
-        if len(row) != len(header) or not row[fs_index].isdigit():
-            continue
-        raw_name = row[name_index]
+
+    if header_index is not None:
+        header = [cell.lower() for cell in rows[header_index]]
+        fs_index = header.index("fs_id")
+        size_index = next(
+            (index for index, cell in enumerate(header) if cell in {"文件大小", "size"}), None
+        )
+        name_index = len(header) - 1
+        if size_index is None:
+            raise BaiduError("BaiduPCS-Go listing does not contain a size column")
+        raw_items = (
+            (row[fs_index], row[size_index], row[name_index])
+            for row in rows[header_index + 1 :]
+            if len(row) == len(header) and row[fs_index].isdigit()
+        )
+    else:
+        clean = _ANSI_RE.sub("", output)
+        if not re.search(r"\bFS\s+ID\b", clean, re.I) or "文件(目录)" not in clean:
+            raise BaiduError("BaiduPCS-Go returned an unrecognized directory listing")
+        raw_items = (
+            (match.group("fs_id"), match.group("size"), match.group("name"))
+            for match in _ALIGNED_LISTING_ROW_RE.finditer(clean)
+        )
+
+    for fs_id, raw_size, raw_name in raw_items:
         is_dir = raw_name.endswith("/") or raw_name.endswith("\\")
         name = raw_name.rstrip("/\\")
         remote_path = str(PurePosixPath(directory) / name)
         relative_path = str(PurePosixPath(remote_path).relative_to(PurePosixPath(root)))
-        size = 0 if is_dir or row[size_index] == "-" else parse_size(row[size_index])
+        size = 0 if is_dir or raw_size == "-" else parse_size(raw_size)
         result.append(
             BaiduItem(
-                fs_id=row[fs_index],
+                fs_id=fs_id,
                 remote_path=remote_path,
                 relative_path=relative_path,
                 name=name,
@@ -108,6 +125,27 @@ def parse_detailed_listing(output: str, directory: str, root: str) -> list[Baidu
             )
         )
     return result
+
+
+def parse_metadata(output: str) -> tuple[str, int]:
+    clean = _ANSI_RE.sub("", output)
+    fs_match = re.search(r"^\s*fs_id\s+(\d+)\s*$", clean, re.I | re.M)
+    size_match = re.search(r"^\s*(?:文件大小|size)\s+(\d+)(?:\s*,|\s*$)", clean, re.I | re.M)
+    if fs_match:
+        return fs_match.group(1), int(size_match.group(1)) if size_match else 0
+
+    fs_id = ""
+    size = 0
+    for row in _table_rows(clean):
+        if len(row) >= 2 and row[0].lower() == "fs_id" and row[1].isdigit():
+            fs_id = row[1]
+        if len(row) >= 2 and row[0].lower() in {"文件大小", "size"}:
+            numeric = row[1].split(",", maxsplit=1)[0].strip()
+            if numeric.isdigit():
+                size = int(numeric)
+    if not fs_id:
+        raise BaiduError("Could not read the Baidu fs_id")
+    return fs_id, size
 
 
 class BaiduPCSClient:
@@ -206,18 +244,7 @@ class BaiduPCSClient:
 
     async def metadata(self, remote_path: str) -> tuple[str, int]:
         result = await self.run("meta", remote_path, timeout=60)
-        fs_id = ""
-        size = 0
-        for row in _table_rows(result.stdout):
-            if len(row) >= 2 and row[0].lower() == "fs_id" and row[1].isdigit():
-                fs_id = row[1]
-            if len(row) >= 2 and row[0] == "文件大小":
-                numeric = row[1].split(",", maxsplit=1)[0].strip()
-                if numeric.isdigit():
-                    size = int(numeric)
-        if not fs_id:
-            raise BaiduError("Could not read the Baidu fs_id")
-        return fs_id, size
+        return parse_metadata(result.stdout)
 
     async def locate(self, remote_path: str) -> list[str]:
         result = await self.run("locate", remote_path, timeout=120)
