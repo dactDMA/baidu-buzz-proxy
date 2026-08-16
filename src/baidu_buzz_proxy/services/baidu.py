@@ -33,11 +33,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _URL_RE = re.compile(r"https?://[^\s|]+")
 _SIZE_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([KMGTPE]?I?B)\s*$", re.I)
 _DATETIME_PATTERN = r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}"
+_MD5_PATTERN = r"(?:\(可能不正确\))?[0-9a-f]{32}"
 _ALIGNED_LISTING_ROW_RE = re.compile(
     rf"^\s*\d+\s+(?P<fs_id>\d+)\s+\d+\s+"
     rf"(?P<size>-|[0-9]+(?:\.[0-9]+)?\s*[KMGTPE]?I?B)\s+"
     rf"{_DATETIME_PATTERN}\s+{_DATETIME_PATTERN}\s+"
-    r"(?:(?P<md5>[0-9a-f]{32})\s+)?(?P<name>.+?)\s*$",
+    rf"(?:(?P<md5>{_MD5_PATTERN})\s+)?(?P<name>.+?)\s*$",
     re.I | re.M,
 )
 _SIZE_FACTORS = {

@@ -73,6 +73,24 @@ def test_empty_aligned_listing_is_valid() -> None:
     assert parse_detailed_listing(output, "/empty", "/empty") == []
 
 
+def test_parse_aligned_listing_with_flagged_md5() -> None:
+    output = (
+        "  #       FS ID        APP ID  文件大小       创建日期             修改日期"
+        "            MD5(截图请打码)          文件(目录)\n"
+        "  0      337297340389  250528  1.43GB    2025-12-01 17:27:52"
+        "  2026-08-16 01:00:55  (可能不正确)9d7c63460b0cd8f7962da5b24a57d348"
+        "  classification.rar\n"
+        "                       总: 1.43GB"
+        "                                                   文件总数: 1, 目录总数: 0\n"
+    )
+
+    items = parse_detailed_listing(output, "/dataset", "/dataset")
+
+    assert len(items) == 1
+    assert items[0].name == "classification.rar"
+    assert items[0].remote_path == "/dataset/classification.rar"
+
+
 def test_parse_aligned_file_metadata() -> None:
     output = """
 [0] - [/base.rar] --------------
