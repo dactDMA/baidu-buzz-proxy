@@ -68,6 +68,7 @@ jobs:
           BUZZHEAVIER_ACCESS_TOKEN: ${{ secrets.BBP_BUZZHEAVIER_ACCESS_TOKEN }}
           TURNSTILE_SECRET_KEY: ${{ secrets.BBP_TURNSTILE_SECRET_KEY }}
           BAIDU_COOKIES: ${{ secrets.BBP_BAIDU_COOKIES }}
+          BAIDU_PCS_CONFIG: ${{ secrets.BBP_BAIDU_PCS_CONFIG }}
           TURNSTILE_SITE_KEY: ${{ vars.BBP_TURNSTILE_SITE_KEY }}
           BAIDU_RESERVE_GIB: ${{ vars.BBP_BAIDU_RESERVE_GIB }}
           MAX_ACTIVE_JOBS: ${{ vars.BBP_MAX_ACTIVE_JOBS }}
@@ -90,6 +91,7 @@ jobs:
           install -d -m 700 "$runtime_dir"
           runtime_env="$runtime_dir/runtime.env"
           cookie_file="$runtime_dir/baidu-cookies"
+          pcs_config_file="$runtime_dir/baidu-pcs-config"
           umask 077
 
           write_env() {
@@ -121,6 +123,7 @@ jobs:
             exit 1
           fi
           printf '%s' "$BAIDU_COOKIES" > "$cookie_file"
+          printf '%s' "$BAIDU_PCS_CONFIG" > "$pcs_config_file"
 
           remote_dir=/opt/baidu-buzz-proxy
           ssh -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
@@ -132,14 +135,21 @@ jobs:
           scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes "$cookie_file" \
             "$VPS_USER@$VPS_HOST:$remote_dir/.runtime-secrets/baidu-cookies.tmp"
+          scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes "$pcs_config_file" \
+            "$VPS_USER@$VPS_HOST:$remote_dir/.runtime-secrets/baidu-pcs-config.tmp"
           ssh -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
             "chmod 600 '$remote_dir/.runtime.env.tmp' \
-              '$remote_dir/.runtime-secrets/baidu-cookies.tmp' && \
+              '$remote_dir/.runtime-secrets/baidu-cookies.tmp' \
+              '$remote_dir/.runtime-secrets/baidu-pcs-config.tmp' && \
              mv -f '$remote_dir/.runtime.env.tmp' '$remote_dir/.runtime.env' && \
              mv -f '$remote_dir/.runtime-secrets/baidu-cookies.tmp' \
               '$remote_dir/.runtime-secrets/baidu-cookies' && \
-             chmod 644 '$remote_dir/.runtime-secrets/baidu-cookies'"
+             mv -f '$remote_dir/.runtime-secrets/baidu-pcs-config.tmp' \
+              '$remote_dir/.runtime-secrets/baidu-pcs-config' && \
+             chmod 644 '$remote_dir/.runtime-secrets/baidu-cookies' \
+              '$remote_dir/.runtime-secrets/baidu-pcs-config'"
 
       - name: Deploy release
         shell: bash

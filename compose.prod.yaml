@@ -23,6 +23,7 @@ services:
     volumes:
       - app-data:/app/data
       - ./.runtime-secrets/baidu-cookies:/run/secrets/baidu-cookies:ro
+      - ./.runtime-secrets/baidu-pcs-config:/run/secrets/baidu-pcs-config:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
