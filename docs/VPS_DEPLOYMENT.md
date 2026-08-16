@@ -58,6 +58,73 @@ named `production`. Add these environment secrets:
 | `VPS_SSH_PRIVATE_KEY` | Complete contents of `bbp_deploy` |
 | `VPS_KNOWN_HOSTS` | Verified SSH host key entry for the VPS |
 
+Add the application secrets to the same `production` environment:
+
+| Secret | Required | Value |
+| --- | --- | --- |
+| `BBP_ADMIN_ACCESS_TOKEN` | Yes | Long administrator password |
+| `BBP_ADMIN_JWT_SECRET` | No | Independent random signing key |
+| `BBP_BUZZHEAVIER_ACCESS_TOKEN` | No | Token for account-owned uploads |
+| `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key; leave empty when Turnstile is disabled |
+| `BBP_BAIDU_COOKIES` | Conditional | Baidu login cookie; required unless BaiduPCS-Go is logged in manually on the VPS |
+
+The service cannot import or download files until BaiduPCS-Go is authenticated. The
+recommended unattended setup is to provide `BBP_BAIDU_COOKIES`. You may omit it only after
+completing the manual persistent-volume login described in
+[Authenticate Baidu and configure Buzzheavier](#6-authenticate-baidu-and-configure-buzzheavier).
+
+`BBP_ADMIN_JWT_SECRET` may be left unset. In that case, the application derives its JWT
+signing key from `BBP_ADMIN_ACCESS_TOKEN`. `BBP_BUZZHEAVIER_ACCESS_TOKEN` may also be left
+unset because anonymous Buzzheavier uploads are supported.
+
+Cloudflare Turnstile is optional. If you do not have Turnstile keys, leave both
+`BBP_TURNSTILE_SITE_KEY` and `BBP_TURNSTILE_SECRET_KEY` unset or empty; job creation will
+work without a CAPTCHA. To enable it later, create a Turnstile widget and configure both
+values together. Configuring only the secret key blocks job creation because the browser
+cannot produce a Turnstile response without the matching site key.
+
+### Baidu cookie format
+
+The `BBP_BAIDU_COOKIES` secret must contain the cookie value exactly as a browser sends it,
+all on one line. It must contain valid `BDUSS` and `STOKEN` entries:
+
+```text
+BDUSS=your-bduss-value; STOKEN=your-stoken-value
+```
+
+Additional Baidu cookies are accepted and may be kept in the same semicolon-separated
+line:
+
+```text
+BAIDUID=your-baiduid-value; BDUSS=your-bduss-value; STOKEN=your-stoken-value; PANWEB=1
+```
+
+Do not add a `Cookie:` prefix, surrounding quotes, Markdown backticks, or a line break.
+Copy only the value following the `Cookie:` request-header name in browser developer tools.
+Treat the value as an account credential: store it only as a GitHub Environment secret and
+replace it when the Baidu session expires or is revoked.
+
+The workflow transfers the cookie separately and stores it as
+`/opt/baidu-buzz-proxy/.runtime-secrets/baidu-cookies`. The parent directory has mode `700`;
+the file is mounted read-only into the non-root application container.
+
+Non-secret settings can be added under **Environment variables**. Missing variables use
+these defaults:
+
+| Variable | Default |
+| --- | --- |
+| `BBP_TURNSTILE_SITE_KEY` | Empty |
+| `BBP_BAIDU_RESERVE_GIB` | `300` |
+| `BBP_MAX_ACTIVE_JOBS` | `2` |
+| `BBP_MAX_PENDING_JOBS` | `100` |
+| `BBP_JOB_PAGE_TTL_DAYS` | `8` |
+| `BBP_FAILED_JOB_TTL_HOURS` | `24` |
+
+Each deployment atomically writes these values to `.runtime.env`. That file overrides
+matching entries in `.env`. A missing `BBP_ADMIN_ACCESS_TOKEN` stops the workflow before
+it changes the server configuration. After changing a GitHub secret or variable, run the
+deployment workflow again to synchronize it to the VPS.
+
 Generate a known-hosts entry with:
 
 ```sh
@@ -83,18 +150,148 @@ The deployment workflow:
 
 1. validates the commit and image name;
 2. connects to the VPS with strict SSH host-key checking;
-3. backs up SQLite when an earlier release is running;
-4. pulls the exact `sha-<commit>` image;
-5. waits for all container health checks;
-6. restores the previous image if the new release fails.
+3. atomically synchronizes GitHub runtime configuration and optional Baidu cookies;
+4. backs up SQLite when an earlier release is running;
+5. pulls the exact `sha-<commit>` image;
+6. waits for all container health checks;
+7. restores the previous image if the new release fails.
 
 Run production deployment only while no long transfer is active. Multipart transfers do
 not survive a complete worker replacement.
+
+## 6. Authenticate Baidu and configure Buzzheavier
+
+The application container copies BaiduPCS-Go into the persistent `app-data` volume. When
+`BBP_BAIDU_COOKIES` is configured in GitHub, the container imports it automatically and
+validates account quota before starting. Login repeats only when the cookie changes or the
+saved session is no longer valid.
+
+Without that GitHub secret, log in interactively once after the first deployment:
+
+```sh
+cd /opt/baidu-buzz-proxy
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
+  exec app /app/data/baidu/BaiduPCS-Go login
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
+  exec app /app/data/baidu/BaiduPCS-Go quota
+```
+
+Complete the interactive prompts. The account must include a valid `STOKEN`, because the
+public-share import command requires it. Do not paste cookies into `.env`, deployment logs,
+or a command saved in shell history. BaiduPCS-Go stores its login state under
+`/app/data/baidu` in the persistent volume. Removing the optional GitHub cookie secret does
+not erase an already persisted login; it disables automatic refresh on later deployments.
+
+When GitHub synchronization is not used, set the runtime values directly in `.env`.
+Buzzheavier accepts anonymous multipart uploads, so its token may remain empty:
+
+```dotenv
+BBP_BUZZHEAVIER_ACCESS_TOKEN=
+BBP_ADMIN_ACCESS_TOKEN=replace-with-a-long-admin-password
+BBP_ADMIN_JWT_SECRET=replace-with-an-independent-random-secret
+```
+
+Create the empty optional-cookie mount before a fully manual Compose deployment:
+
+```sh
+install -d -m 700 .runtime-secrets
+install -m 644 /dev/null .runtime-secrets/baidu-cookies
+```
+
+The cookie file is readable inside the non-root container but remains protected from other
+host users by its mode-`700` parent directory.
+
+For account-owned uploads, replace the empty Buzzheavier value with that account's token.
+Anonymous mode sends no `Authorization` header.
+
+`BBP_ADMIN_JWT_SECRET` signs the HTTP-only administrator session cookie. It may be left
+empty, in which case the application derives a signing key from `BBP_ADMIN_ACCESS_TOKEN`,
+but a separate random value makes later password rotation cleaner.
+
+Restart the application after editing `.env`, then verify both the local and public paths:
+
+```sh
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml up -d
+curl http://127.0.0.1:8080/api/health
+curl https://baidu.example.com/api/health
+```
+
+The first real test should use a small public share. Confirm that the job reaches
+`awaiting_selection`, that the Buzzheavier link works, and that the corresponding
+`/ProxyJobs/<job-id>` folder is no longer present in Baidu after completion. The project
+uses Buzzheavier's web multipart protocol, which is not currently described in its public
+API reference; repeat this small smoke test after image upgrades.
 
 ## HTTPS
 
 The production Compose file listens on `127.0.0.1:8080` by default. Put Caddy, Nginx, or a
 Cloudflare tunnel in front of this address and expose only ports 80 and 443 publicly.
+
+### Nginx and Certbot on Ubuntu
+
+Install the host reverse proxy and certificate tooling:
+
+```sh
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx
+```
+
+Create `/etc/nginx/sites-available/baidu-buzz-proxy`:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name baidu.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+    }
+}
+```
+
+Replace `baidu.example.com` with the deployment domain, then enable the site:
+
+```sh
+sudo ln -s /etc/nginx/sites-available/baidu-buzz-proxy /etc/nginx/sites-enabled/baidu-buzz-proxy
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+Confirm that the application is reachable through Nginx before requesting a certificate:
+
+```sh
+curl http://baidu.example.com/api/health
+sudo certbot --nginx -d baidu.example.com --redirect
+curl https://baidu.example.com/api/health
+```
+
+`curl -I` sends a `HEAD` request. A `405 Method Not Allowed` response from an endpoint that
+only implements `GET` still proves that the reverse proxy reached the application. Use a
+normal `curl URL` request for an application health check.
+
+If the public endpoint returns `502 Bad Gateway`, check the local upstream first:
+
+```sh
+curl http://127.0.0.1:8080/api/health
+sudo ss -tlnp | grep -E ':80|:443|:8080'
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml ps
+```
+
+When the local health request succeeds, the host reverse proxy must use
+`http://127.0.0.1:8080`, not HTTPS and not the container-only port 8000.
 
 For a temporary direct test, set the following values in `.env` and allow port 8080 in the
 firewall:

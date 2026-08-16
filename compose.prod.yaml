@@ -5,7 +5,9 @@ services:
     image: ${BBP_IMAGE:?Set BBP_IMAGE to a published application image}
     pull_policy: never
     env_file:
-      - .env
+      - path: .env
+      - path: .runtime.env
+        required: false
     environment:
       BBP_ENVIRONMENT: production
       BBP_HOST: 0.0.0.0
@@ -20,6 +22,7 @@ services:
       - "8000"
     volumes:
       - app-data:/app/data
+      - ./.runtime-secrets/baidu-cookies:/run/secrets/baidu-cookies:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
