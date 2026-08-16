@@ -164,7 +164,10 @@ not survive a complete worker replacement.
 The application container copies BaiduPCS-Go into the persistent `app-data` volume. When
 `BBP_BAIDU_COOKIES` is configured in GitHub, the container imports it automatically and
 validates account quota before starting. Login repeats only when the cookie changes or the
-saved session is no longer valid.
+saved session is no longer valid. Baidu endpoints can respond slowly or time out
+intermittently, so managed login makes three bounded attempts with short backoff delays.
+Production health checks allow this initialization to finish before judging the container
+unhealthy.
 
 Without that GitHub secret, log in interactively once after the first deployment:
 

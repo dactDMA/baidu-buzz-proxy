@@ -92,7 +92,7 @@ git checkout --quiet --detach "$release_commit"
 docker pull "$release_image"
 write_image_env "$release_image"
 
-if compose up -d --remove-orphans --wait --wait-timeout 180 && check_health; then
+if compose up -d --remove-orphans --wait --wait-timeout 420 && check_health; then
     printf '%s\n' "$release_image" > .deployed-image
     printf '%s\n' "$release_commit" > .deployed-commit
     echo "Deployment completed: $release_commit"
@@ -107,7 +107,7 @@ if [[ -n "$previous_image" && "$previous_commit" =~ ^[0-9a-f]{40}$ ]]; then
     git checkout --quiet --detach "$previous_commit"
     write_image_env "$previous_image"
     docker pull "$previous_image"
-    compose up -d --remove-orphans --wait --wait-timeout 180
+    compose up -d --remove-orphans --wait --wait-timeout 420
     check_health
     echo "Rollback completed" >&2
 fi
