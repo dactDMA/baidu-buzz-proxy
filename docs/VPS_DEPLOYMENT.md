@@ -58,6 +58,38 @@ named `production`. Add these environment secrets:
 | `VPS_SSH_PRIVATE_KEY` | Complete contents of `bbp_deploy` |
 | `VPS_KNOWN_HOSTS` | Verified SSH host key entry for the VPS |
 
+Add the application secrets to the same `production` environment:
+
+| Secret | Required | Value |
+| --- | --- | --- |
+| `BBP_ADMIN_ACCESS_TOKEN` | Yes | Long administrator password |
+| `BBP_ADMIN_JWT_SECRET` | No | Independent random signing key |
+| `BBP_BUZZHEAVIER_ACCESS_TOKEN` | No | Token for account-owned uploads |
+| `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key |
+| `BBP_BAIDU_COOKIES` | No | Complete one-line Baidu `Cookie` header |
+
+The optional Baidu value should contain at least valid `BDUSS` and `STOKEN` cookies. Do not
+add surrounding quotes or a line break. The workflow transfers it separately and stores it
+as `/opt/baidu-buzz-proxy/.runtime-secrets/baidu-cookies`. The parent directory has mode
+`700`; the file is mounted read-only into the non-root application container.
+
+Non-secret settings can be added under **Environment variables**. Missing variables use
+these defaults:
+
+| Variable | Default |
+| --- | --- |
+| `BBP_TURNSTILE_SITE_KEY` | Empty |
+| `BBP_BAIDU_RESERVE_GIB` | `300` |
+| `BBP_MAX_ACTIVE_JOBS` | `2` |
+| `BBP_MAX_PENDING_JOBS` | `100` |
+| `BBP_JOB_PAGE_TTL_DAYS` | `8` |
+| `BBP_FAILED_JOB_TTL_HOURS` | `24` |
+
+Each deployment atomically writes these values to `.runtime.env`. That file overrides
+matching entries in `.env`. A missing `BBP_ADMIN_ACCESS_TOKEN` stops the workflow before
+it changes the server configuration. After changing a GitHub secret or variable, run the
+deployment workflow again to synchronize it to the VPS.
+
 Generate a known-hosts entry with:
 
 ```sh
@@ -83,18 +115,23 @@ The deployment workflow:
 
 1. validates the commit and image name;
 2. connects to the VPS with strict SSH host-key checking;
-3. backs up SQLite when an earlier release is running;
-4. pulls the exact `sha-<commit>` image;
-5. waits for all container health checks;
-6. restores the previous image if the new release fails.
+3. atomically synchronizes GitHub runtime configuration and optional Baidu cookies;
+4. backs up SQLite when an earlier release is running;
+5. pulls the exact `sha-<commit>` image;
+6. waits for all container health checks;
+7. restores the previous image if the new release fails.
 
 Run production deployment only while no long transfer is active. Multipart transfers do
 not survive a complete worker replacement.
 
 ## 6. Authenticate Baidu and configure Buzzheavier
 
-The application container copies BaiduPCS-Go into the persistent `app-data` volume. Log in
-once after the first deployment:
+The application container copies BaiduPCS-Go into the persistent `app-data` volume. When
+`BBP_BAIDU_COOKIES` is configured in GitHub, the container imports it automatically and
+validates account quota before starting. Login repeats only when the cookie changes or the
+saved session is no longer valid.
+
+Without that GitHub secret, log in interactively once after the first deployment:
 
 ```sh
 cd /opt/baidu-buzz-proxy
@@ -106,17 +143,28 @@ docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
 
 Complete the interactive prompts. The account must include a valid `STOKEN`, because the
 public-share import command requires it. Do not paste cookies into `.env`, deployment logs,
-GitHub Actions, or a command saved in shell history. BaiduPCS-Go stores its own login state
-under `/app/data/baidu` in the persistent volume.
+or a command saved in shell history. BaiduPCS-Go stores its login state under
+`/app/data/baidu` in the persistent volume. Removing the optional GitHub cookie secret does
+not erase an already persisted login; it disables automatic refresh on later deployments.
 
-Buzzheavier accepts anonymous multipart uploads. Leave its token empty unless the resulting
-files should belong to a Buzzheavier account:
+When GitHub synchronization is not used, set the runtime values directly in `.env`.
+Buzzheavier accepts anonymous multipart uploads, so its token may remain empty:
 
 ```dotenv
 BBP_BUZZHEAVIER_ACCESS_TOKEN=
 BBP_ADMIN_ACCESS_TOKEN=replace-with-a-long-admin-password
 BBP_ADMIN_JWT_SECRET=replace-with-an-independent-random-secret
 ```
+
+Create the empty optional-cookie mount before a fully manual Compose deployment:
+
+```sh
+install -d -m 700 .runtime-secrets
+install -m 644 /dev/null .runtime-secrets/baidu-cookies
+```
+
+The cookie file is readable inside the non-root container but remains protected from other
+host users by its mode-`700` parent directory.
 
 For account-owned uploads, replace the empty Buzzheavier value with that account's token.
 Anonymous mode sends no `Authorization` header.

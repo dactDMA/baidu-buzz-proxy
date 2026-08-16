@@ -1,6 +1,9 @@
 .env
 .image.env
 .image.env.tmp
+.runtime.env
+.runtime.env.tmp
+.runtime-secrets/
 .deployed-image
 .deployed-commit
 .idea/

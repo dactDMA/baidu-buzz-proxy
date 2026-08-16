@@ -82,6 +82,8 @@ to delete the SQLite database, Redis data, and BaiduPCS-Go configuration.
 ## Configuration
 
 Configuration is read from `.env`. See [.env.example](.env.example) for the complete list.
+Production deployments can additionally synchronize these values from the GitHub
+`production` environment into `.runtime.env`; synchronized values override `.env`.
 
 | Variable | Description | Default |
 | --- | --- | --- |
@@ -102,6 +104,12 @@ Configuration is read from `.env`. See [.env.example](.env.example) for the comp
 | `BBP_STALLED_JOB_TIMEOUT_HOURS` | Timeout for stalled jobs | `24` |
 
 Never commit `.env`, Baidu cookies, Buzzheavier credentials, or administrator tokens.
+
+`BBP_BAIDU_COOKIES` is a deployment-only GitHub secret rather than an application
+environment variable. When configured, the deployment stores it in a file inside a
+mode-`700` host directory and mounts only that file read-only into the container. The
+container refreshes BaiduPCS-Go login state when the cookie changes or the saved session
+expires. Leaving it empty preserves manual BaiduPCS-Go login behavior.
 
 ## Persistent data
 

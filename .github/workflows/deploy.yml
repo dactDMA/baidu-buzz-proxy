@@ -57,6 +57,90 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
+      - name: Sync runtime configuration
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          ADMIN_ACCESS_TOKEN: ${{ secrets.BBP_ADMIN_ACCESS_TOKEN }}
+          ADMIN_JWT_SECRET: ${{ secrets.BBP_ADMIN_JWT_SECRET }}
+          BUZZHEAVIER_ACCESS_TOKEN: ${{ secrets.BBP_BUZZHEAVIER_ACCESS_TOKEN }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.BBP_TURNSTILE_SECRET_KEY }}
+          BAIDU_COOKIES: ${{ secrets.BBP_BAIDU_COOKIES }}
+          TURNSTILE_SITE_KEY: ${{ vars.BBP_TURNSTILE_SITE_KEY }}
+          BAIDU_RESERVE_GIB: ${{ vars.BBP_BAIDU_RESERVE_GIB }}
+          MAX_ACTIVE_JOBS: ${{ vars.BBP_MAX_ACTIVE_JOBS }}
+          MAX_PENDING_JOBS: ${{ vars.BBP_MAX_PENDING_JOBS }}
+          JOB_PAGE_TTL_DAYS: ${{ vars.BBP_JOB_PAGE_TTL_DAYS }}
+          FAILED_JOB_TTL_HOURS: ${{ vars.BBP_FAILED_JOB_TTL_HOURS }}
+        run: |
+          set -euo pipefail
+          VPS_PORT="${VPS_PORT:-22}"
+          if [[ -z "$VPS_HOST" || -z "$VPS_USER" || ! "$VPS_PORT" =~ ^[0-9]+$ ]]; then
+            echo "VPS connection secrets are invalid" >&2
+            exit 1
+          fi
+          if [[ -z "$ADMIN_ACCESS_TOKEN" ]]; then
+            echo "BBP_ADMIN_ACCESS_TOKEN is required" >&2
+            exit 1
+          fi
+
+          runtime_dir="$RUNNER_TEMP/bbp-runtime"
+          install -d -m 700 "$runtime_dir"
+          runtime_env="$runtime_dir/runtime.env"
+          cookie_file="$runtime_dir/baidu-cookies"
+          umask 077
+
+          write_env() {
+            local key="$1"
+            local value="$2"
+            if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+              echo "$key contains a line break" >&2
+              exit 1
+            fi
+            value="${value//\\/\\\\}"
+            value="${value//\"/\\\"}"
+            value="${value//\$/\$\$}"
+            printf '%s="%s"\n' "$key" "$value" >> "$runtime_env"
+          }
+
+          write_env BBP_ADMIN_ACCESS_TOKEN "$ADMIN_ACCESS_TOKEN"
+          write_env BBP_ADMIN_JWT_SECRET "$ADMIN_JWT_SECRET"
+          write_env BBP_BUZZHEAVIER_ACCESS_TOKEN "$BUZZHEAVIER_ACCESS_TOKEN"
+          write_env BBP_TURNSTILE_SECRET_KEY "$TURNSTILE_SECRET_KEY"
+          write_env BBP_TURNSTILE_SITE_KEY "$TURNSTILE_SITE_KEY"
+          write_env BBP_BAIDU_RESERVE_GIB "${BAIDU_RESERVE_GIB:-300}"
+          write_env BBP_MAX_ACTIVE_JOBS "${MAX_ACTIVE_JOBS:-2}"
+          write_env BBP_MAX_PENDING_JOBS "${MAX_PENDING_JOBS:-100}"
+          write_env BBP_JOB_PAGE_TTL_DAYS "${JOB_PAGE_TTL_DAYS:-8}"
+          write_env BBP_FAILED_JOB_TTL_HOURS "${FAILED_JOB_TTL_HOURS:-24}"
+
+          if [[ "$BAIDU_COOKIES" == *$'\n'* || "$BAIDU_COOKIES" == *$'\r'* ]]; then
+            echo "BBP_BAIDU_COOKIES contains a line break" >&2
+            exit 1
+          fi
+          printf '%s' "$BAIDU_COOKIES" > "$cookie_file"
+
+          remote_dir=/opt/baidu-buzz-proxy
+          ssh -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "install -d -m 700 '$remote_dir/.runtime-secrets'"
+          scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes "$runtime_env" \
+            "$VPS_USER@$VPS_HOST:$remote_dir/.runtime.env.tmp"
+          scp -P "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes "$cookie_file" \
+            "$VPS_USER@$VPS_HOST:$remote_dir/.runtime-secrets/baidu-cookies.tmp"
+          ssh -p "$VPS_PORT" -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "chmod 600 '$remote_dir/.runtime.env.tmp' \
+              '$remote_dir/.runtime-secrets/baidu-cookies.tmp' && \
+             mv -f '$remote_dir/.runtime.env.tmp' '$remote_dir/.runtime.env' && \
+             mv -f '$remote_dir/.runtime-secrets/baidu-cookies.tmp' \
+              '$remote_dir/.runtime-secrets/baidu-cookies' && \
+             chmod 644 '$remote_dir/.runtime-secrets/baidu-cookies'"
+
       - name: Deploy release
         shell: bash
         env:
