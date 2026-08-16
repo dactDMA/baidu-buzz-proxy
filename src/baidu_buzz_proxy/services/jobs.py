@@ -287,7 +287,12 @@ class JobService:
         await self._set_state(public_id, JobState.TRANSFERRING, "Resolving Baidu links")
 
         sources: list[SourceFile] = []
-        for item in files:
+        for index, item in enumerate(files, start=1):
+            display_name = item.name if len(item.name) <= 160 else f"{item.name[:157]}..."
+            await self._set_message(
+                public_id,
+                f"Resolving Baidu link {index} of {len(files)}: {display_name}",
+            )
             urls = await self.baidu.locate(item.remote_path)
             sources.append(
                 SourceFile(
@@ -296,6 +301,8 @@ class JobService:
                     urls=tuple(urls),
                 )
             )
+
+        await self._set_message(public_id, "Starting the Buzzheavier upload")
 
         selected_directories = any(item.selected and item.is_dir for item in job.items)
         stream = (
