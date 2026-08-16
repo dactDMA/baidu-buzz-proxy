@@ -56,6 +56,16 @@ docker compose up -d --build
 Open <http://127.0.0.1:8080>. API documentation is available at
 <http://127.0.0.1:8080/docs>.
 
+Authenticate the persisted BaiduPCS-Go installation before creating the first job:
+
+```sh
+docker compose exec app /app/data/baidu/BaiduPCS-Go login
+docker compose exec app /app/data/baidu/BaiduPCS-Go quota
+```
+
+The account must have a valid `STOKEN`; BaiduPCS-Go requires it for importing public
+shares. The login configuration is stored in the `app-data` volume, not in the image.
+
 Useful commands:
 
 ```sh
@@ -74,11 +84,17 @@ Configuration is read from `.env`. See [.env.example](.env.example) for the comp
 | Variable | Description | Default |
 | --- | --- | --- |
 | `BBP_BUZZHEAVIER_ACCESS_TOKEN` | Buzzheavier account access token | Required |
+| `BBP_BUZZHEAVIER_BASE_URL` | Buzzheavier API origin | `https://buzzheavier.com` |
+| `BBP_BUZZHEAVIER_PART_SIZE_MIB` | Multipart chunk size | `100` |
+| `BBP_BUZZHEAVIER_PART_CONCURRENCY` | Concurrent chunks per job | `2` |
+| `BBP_BUZZHEAVIER_PART_RETRIES` | Retry count for one failed chunk | `5` |
 | `BBP_ADMIN_ACCESS_TOKEN` | Password used to access administrative functions | Required |
+| `BBP_ADMIN_JWT_SECRET` | Signing secret for admin cookies | Derived from admin token |
 | `BBP_TURNSTILE_SITE_KEY` | Cloudflare Turnstile public site key | Empty |
 | `BBP_TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key | Empty |
 | `BBP_BAIDU_RESERVE_GIB` | Baidu storage that must remain unused | `300` |
 | `BBP_MAX_ACTIVE_JOBS` | Maximum number of simultaneous jobs | `2` |
+| `BBP_MAX_PENDING_JOBS` | Maximum number of queued or waiting jobs | `100` |
 | `BBP_JOB_PAGE_TTL_DAYS` | Completed job page retention | `8` |
 | `BBP_FAILED_JOB_TTL_HOURS` | Failed job retention | `24` |
 | `BBP_STALLED_JOB_TIMEOUT_HOURS` | Timeout for stalled jobs | `24` |
@@ -96,12 +112,25 @@ The application image can be rebuilt or replaced without deleting these volumes.
 
 ## Transfer behavior
 
+- A new job first imports the entire public share into `/ProxyJobs/<job-id>` in the
+  service account. This is necessary because BaiduPCS-Go does not accept a destination or
+  selected file IDs for its public-share transfer command.
+- Once the import is complete, the secret job page displays the imported tree and accepts
+  either individual selections or the complete share.
 - Source files are streamed and are not retained as complete files on the VPS.
 - Folders are represented as uncompressed ZIP64 archives.
 - Failed multipart requests can be retried while the worker remains running.
 - An interrupted transfer does not resume after a complete worker restart and must be
   started again.
 - Result pages expire after the configured retention period.
+- Cleanup records the temporary folder's `fs_id`, moves only that folder to the Baidu
+  recycle bin, and permanently deletes only that recorded item. It never clears the whole
+  recycle bin.
+
+Buzzheavier documents account uploads through its upload API. The web uploader currently
+uses a multipart protocol that retries individual chunks; this project implements that
+protocol. Because the multipart endpoint is not part of Buzzheavier's published API
+reference, test a small transfer after upgrades before starting a very large job.
 
 ## Security
 

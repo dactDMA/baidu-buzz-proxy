@@ -91,10 +91,120 @@ The deployment workflow:
 Run production deployment only while no long transfer is active. Multipart transfers do
 not survive a complete worker replacement.
 
+## 6. Authenticate the service accounts
+
+The application container copies BaiduPCS-Go into the persistent `app-data` volume. Log in
+once after the first deployment:
+
+```sh
+cd /opt/baidu-buzz-proxy
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
+  exec app /app/data/baidu/BaiduPCS-Go login
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
+  exec app /app/data/baidu/BaiduPCS-Go quota
+```
+
+Complete the interactive prompts. The account must include a valid `STOKEN`, because the
+public-share import command requires it. Do not paste cookies into `.env`, deployment logs,
+GitHub Actions, or a command saved in shell history. BaiduPCS-Go stores its own login state
+under `/app/data/baidu` in the persistent volume.
+
+Set the Buzzheavier account identifier/token in `.env`:
+
+```dotenv
+BBP_BUZZHEAVIER_ACCESS_TOKEN=replace-with-the-account-token
+BBP_ADMIN_ACCESS_TOKEN=replace-with-a-long-admin-password
+BBP_ADMIN_JWT_SECRET=replace-with-an-independent-random-secret
+```
+
+`BBP_ADMIN_JWT_SECRET` signs the HTTP-only administrator session cookie. It may be left
+empty, in which case the application derives a signing key from `BBP_ADMIN_ACCESS_TOKEN`,
+but a separate random value makes later password rotation cleaner.
+
+Restart the application after editing `.env`, then verify both the local and public paths:
+
+```sh
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml up -d
+curl http://127.0.0.1:8080/api/health
+curl https://baidu.example.com/api/health
+```
+
+The first real test should use a small public share. Confirm that the job reaches
+`awaiting_selection`, that the Buzzheavier link works, and that the corresponding
+`/ProxyJobs/<job-id>` folder is no longer present in Baidu after completion. The project
+uses Buzzheavier's web multipart protocol, which is not currently described in its public
+API reference; repeat this small smoke test after image upgrades.
+
 ## HTTPS
 
 The production Compose file listens on `127.0.0.1:8080` by default. Put Caddy, Nginx, or a
 Cloudflare tunnel in front of this address and expose only ports 80 and 443 publicly.
+
+### Nginx and Certbot on Ubuntu
+
+Install the host reverse proxy and certificate tooling:
+
+```sh
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx
+```
+
+Create `/etc/nginx/sites-available/baidu-buzz-proxy`:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name baidu.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+    }
+}
+```
+
+Replace `baidu.example.com` with the deployment domain, then enable the site:
+
+```sh
+sudo ln -s /etc/nginx/sites-available/baidu-buzz-proxy /etc/nginx/sites-enabled/baidu-buzz-proxy
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+Confirm that the application is reachable through Nginx before requesting a certificate:
+
+```sh
+curl http://baidu.example.com/api/health
+sudo certbot --nginx -d baidu.example.com --redirect
+curl https://baidu.example.com/api/health
+```
+
+`curl -I` sends a `HEAD` request. A `405 Method Not Allowed` response from an endpoint that
+only implements `GET` still proves that the reverse proxy reached the application. Use a
+normal `curl URL` request for an application health check.
+
+If the public endpoint returns `502 Bad Gateway`, check the local upstream first:
+
+```sh
+curl http://127.0.0.1:8080/api/health
+sudo ss -tlnp | grep -E ':80|:443|:8080'
+docker compose --env-file .env --env-file .image.env -f compose.prod.yaml ps
+```
+
+When the local health request succeeds, the host reverse proxy must use
+`http://127.0.0.1:8080`, not HTTPS and not the container-only port 8000.
 
 For a temporary direct test, set the following values in `.env` and allow port 8080 in the
 firewall:
