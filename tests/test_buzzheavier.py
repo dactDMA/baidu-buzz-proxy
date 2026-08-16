@@ -62,5 +62,50 @@ async def test_multipart_upload_splits_and_completes() -> None:
     assert progress[-1] == 16
 
 
+@pytest.mark.asyncio
+async def test_multipart_upload_reports_progress_within_a_part() -> None:
+    content_size = 3 * 1024 * 1024
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/upload":
+            return httpx.Response(
+                200,
+                json={"data": {"id": "upload-2", "location": "/parts/upload-2"}},
+            )
+        if request.method == "PATCH":
+            await request.aread()
+            return httpx.Response(204)
+        return httpx.Response(200, json={"data": {"url": "https://buzz.test/final"}})
+
+    async def content() -> AsyncIterator[bytes]:
+        yield b"x" * content_size
+
+    progress: list[int] = []
+
+    async def record_progress(value: int) -> None:
+        progress.append(value)
+
+    client = BuzzMultipartClient(
+        "https://buzz.test",
+        "",
+        part_size=content_size,
+        concurrency=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await client.upload(
+            "sample.bin",
+            content(),
+            progress=record_progress,
+            is_cancelled=_not_cancelled,
+        )
+    finally:
+        await client.close()
+
+    assert progress[0] < content_size
+    assert progress[-1] == content_size
+    assert progress == sorted(progress)
+
+
 async def _not_cancelled() -> bool:
     return False
