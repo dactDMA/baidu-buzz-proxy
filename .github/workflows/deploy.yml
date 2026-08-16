@@ -103,11 +103,15 @@ jobs:
             done
           }
 
+          ssh_control_path="$RUNNER_TEMP/bbp-ssh-%C"
           ssh_options=(
             -p "$VPS_PORT"
             -o BatchMode=yes
             -o ConnectTimeout=15
             -o ConnectionAttempts=3
+            -o ControlMaster=auto
+            -o ControlPath="$ssh_control_path"
+            -o ControlPersist=60
             -o IdentitiesOnly=yes
             -o ServerAliveInterval=15
             -o ServerAliveCountMax=4
@@ -118,6 +122,9 @@ jobs:
             -o BatchMode=yes
             -o ConnectTimeout=15
             -o ConnectionAttempts=3
+            -o ControlMaster=auto
+            -o ControlPath="$ssh_control_path"
+            -o ControlPersist=60
             -o IdentitiesOnly=yes
             -o ServerAliveInterval=15
             -o ServerAliveCountMax=4
