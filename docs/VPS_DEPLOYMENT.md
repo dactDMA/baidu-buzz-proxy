@@ -178,6 +178,11 @@ The deployment workflow:
 6. waits for all container health checks;
 7. restores the previous image if the new release fails.
 
+SSH directory setup and runtime-secret uploads reuse one short-lived SSH connection. Each
+operation is retried up to four times with a short backoff. This handles transient
+connection resets without replacing a destination file until its complete temporary upload
+is available.
+
 Run production deployment only while no long transfer is active. Multipart transfers do
 not survive a complete worker replacement.
 
