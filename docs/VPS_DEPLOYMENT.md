@@ -1,0 +1,107 @@
+# VPS deployment
+
+This guide configures an Ubuntu VPS for manual production deployments from GitHub Actions.
+The VPS pulls a prebuilt image from GHCR and does not build the application locally.
+
+## 1. Prepare the VPS
+
+Install Git, curl, Docker Engine, and the Docker Compose plugin. Follow the official Docker
+installation instructions for your Ubuntu release rather than using an unversioned shell
+installer.
+
+Create a dedicated deployment user and application directory:
+
+```sh
+sudo adduser --disabled-password --gecos "" bbp
+sudo usermod -aG docker bbp
+sudo install -d -o bbp -g bbp /opt/baidu-buzz-proxy
+sudo -u bbp git clone https://github.com/dactDMA/baidu-buzz-proxy.git /opt/baidu-buzz-proxy
+sudo -u bbp cp /opt/baidu-buzz-proxy/.env.example /opt/baidu-buzz-proxy/.env
+sudo -u bbp chmod 600 /opt/baidu-buzz-proxy/.env
+```
+
+Log out and back in after adding `bbp` to the `docker` group. Confirm that the user can run:
+
+```sh
+sudo -iu bbp docker version
+sudo -iu bbp docker compose version
+```
+
+Edit `/opt/baidu-buzz-proxy/.env` and set the production credentials. Keep
+`BBP_HTTP_BIND=127.0.0.1` when another reverse proxy on the host terminates HTTPS.
+
+## 2. Create a deployment SSH key
+
+Generate a dedicated key on a trusted computer:
+
+```sh
+ssh-keygen -t ed25519 -C "baidu-buzz-proxy deployment" -f bbp_deploy
+```
+
+Add the contents of `bbp_deploy.pub` to `/home/bbp/.ssh/authorized_keys` on the VPS. The
+directory must have mode `700`, and `authorized_keys` must have mode `600` and be owned by
+`bbp`.
+
+Do not reuse a personal SSH key. GitHub receives only the private deployment key, while the
+VPS receives only its public half.
+
+## 3. Configure the GitHub production environment
+
+Open the repository and go to **Settings**, **Environments**, then create an environment
+named `production`. Add these environment secrets:
+
+| Secret | Value |
+| --- | --- |
+| `VPS_HOST` | VPS hostname or IP address |
+| `VPS_PORT` | SSH port, normally `22` |
+| `VPS_USER` | `bbp` |
+| `VPS_SSH_PRIVATE_KEY` | Complete contents of `bbp_deploy` |
+| `VPS_KNOWN_HOSTS` | Verified SSH host key entry for the VPS |
+
+Generate a known-hosts entry with:
+
+```sh
+ssh-keyscan -p 22 -H your-vps.example.com
+```
+
+Compare its fingerprint with the fingerprint shown by the VPS provider or by
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server before storing it.
+
+## 4. Make the container package public
+
+The first push to `main` creates `ghcr.io/dactdma/baidu-buzz-proxy`. Open the package
+settings on GitHub and change its visibility to **Public**. A public package lets the VPS
+pull images without storing an additional GitHub token.
+
+## 5. Deploy a release
+
+Wait for the **CI and image** workflow to finish successfully. Copy the full 40-character
+commit SHA, open **Actions**, **Deploy production**, select **Run workflow**, and paste the
+SHA.
+
+The deployment workflow:
+
+1. validates the commit and image name;
+2. connects to the VPS with strict SSH host-key checking;
+3. backs up SQLite when an earlier release is running;
+4. pulls the exact `sha-<commit>` image;
+5. waits for all container health checks;
+6. restores the previous image if the new release fails.
+
+Run production deployment only while no long transfer is active. Multipart transfers do
+not survive a complete worker replacement.
+
+## HTTPS
+
+The production Compose file listens on `127.0.0.1:8080` by default. Put Caddy, Nginx, or a
+Cloudflare tunnel in front of this address and expose only ports 80 and 443 publicly.
+
+For a temporary direct test, set the following values in `.env` and allow port 8080 in the
+firewall:
+
+```dotenv
+BBP_HTTP_BIND=0.0.0.0
+BBP_HTTP_PORT=8080
+```
+
+Do not use the direct HTTP configuration for production credentials.

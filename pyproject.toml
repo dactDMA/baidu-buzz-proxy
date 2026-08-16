@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "baidu-buzz-proxy"
+version = "0.1.0"
+description = "Stream public Baidu Netdisk shares to Buzzheavier"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "aiosqlite>=0.21,<1",
+    "argon2-cffi>=25,<26",
+    "fastapi>=0.116,<1",
+    "httpx>=0.28,<1",
+    "pydantic-settings>=2.10,<3",
+    "pyjwt>=2.10,<3",
+    "redis>=6,<7",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn[standard]>=0.35,<1",
+    "zipstream-ng>=1.9,<2",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17,<2",
+    "pytest>=8.4,<10",
+    "pytest-asyncio>=1,<2",
+    "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/baidu_buzz_proxy"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["baidu_buzz_proxy"]
+mypy_path = "src"

@@ -1,0 +1,142 @@
+# Baidu Buzz Proxy
+
+[![CI and image](https://github.com/dactDMA/baidu-buzz-proxy/actions/workflows/pipeline.yml/badge.svg)](https://github.com/dactDMA/baidu-buzz-proxy/actions/workflows/pipeline.yml)
+
+Baidu Buzz Proxy is a self-hosted service for transferring files and folders from public
+Baidu Netdisk shares to Buzzheavier. Transfers are streamed through the service without
+storing complete source files on the host.
+
+The project provides an English web interface and API and is designed for deployment on a
+small Linux VPS.
+
+## Features
+
+- Browse public Baidu Netdisk shares without exposing Baidu credentials to visitors
+- Transfer individual files or complete folders to Buzzheavier
+- Stream ZIP64 archives without compression while preserving folder structure
+- Limit concurrent jobs and reserve configurable Baidu account storage
+- Keep temporary job pages for the lifetime of the resulting Buzzheavier upload
+- Cancel jobs with a creator secret or administrator session
+- Run as a non-root user in a read-only Alpine-based container
+- Persist application state and BaiduPCS-Go configuration in Docker volumes
+
+## Architecture
+
+The default Docker Compose stack contains:
+
+- **FastAPI** for the web interface and API
+- **BaiduPCS-Go** for access to Baidu Netdisk
+- **Redis** for coordination, locks, and job state
+- **SQLite** for persistent application data
+- **Nginx** as the public reverse proxy
+
+## Requirements
+
+- Docker Engine with the Compose plugin
+- A Baidu Netdisk account that can access the source files
+- A Buzzheavier access token
+- At least 2 GB of RAM for the recommended two concurrent transfer jobs
+
+## Quick start
+
+Clone the repository and create the local configuration file:
+
+```sh
+git clone https://github.com/dactDMA/baidu-buzz-proxy.git
+cd baidu-buzz-proxy
+cp .env.example .env
+```
+
+Add the required credentials to `.env`, then build and start the stack:
+
+```sh
+docker compose up -d --build
+```
+
+Open <http://127.0.0.1:8080>. API documentation is available at
+<http://127.0.0.1:8080/docs>.
+
+Useful commands:
+
+```sh
+docker compose ps
+docker compose logs -f app nginx
+docker compose down
+```
+
+`docker compose down` preserves application data. Do not add `--volumes` unless you intend
+to delete the SQLite database, Redis data, and BaiduPCS-Go configuration.
+
+## Configuration
+
+Configuration is read from `.env`. See [.env.example](.env.example) for the complete list.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `BBP_BUZZHEAVIER_ACCESS_TOKEN` | Buzzheavier account access token | Required |
+| `BBP_ADMIN_ACCESS_TOKEN` | Password used to access administrative functions | Required |
+| `BBP_TURNSTILE_SITE_KEY` | Cloudflare Turnstile public site key | Empty |
+| `BBP_TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret key | Empty |
+| `BBP_BAIDU_RESERVE_GIB` | Baidu storage that must remain unused | `300` |
+| `BBP_MAX_ACTIVE_JOBS` | Maximum number of simultaneous jobs | `2` |
+| `BBP_JOB_PAGE_TTL_DAYS` | Completed job page retention | `8` |
+| `BBP_FAILED_JOB_TTL_HOURS` | Failed job retention | `24` |
+| `BBP_STALLED_JOB_TIMEOUT_HOURS` | Timeout for stalled jobs | `24` |
+
+Never commit `.env`, Baidu cookies, Buzzheavier credentials, or administrator tokens.
+
+## Persistent data
+
+Docker Compose creates two named volumes:
+
+- `app-data` contains the SQLite database and BaiduPCS-Go configuration.
+- `redis-data` contains the Redis append-only log.
+
+The application image can be rebuilt or replaced without deleting these volumes.
+
+## Transfer behavior
+
+- Source files are streamed and are not retained as complete files on the VPS.
+- Folders are represented as uncompressed ZIP64 archives.
+- Failed multipart requests can be retried while the worker remains running.
+- An interrupted transfer does not resume after a complete worker restart and must be
+  started again.
+- Result pages expire after the configured retention period.
+
+## Security
+
+Use dedicated Baidu and Buzzheavier accounts for a public deployment. Keep all credentials
+on the server, place the service behind HTTPS, enable Turnstile, and apply network-level
+rate limiting. The service should accept only supported Baidu Netdisk URLs and must never
+be exposed as a general-purpose URL proxy.
+
+## Development
+
+Python 3.12 and [uv](https://docs.astral.sh/uv/) are required for local development.
+
+```sh
+uv sync --all-groups
+uv run pytest
+uv run ruff check .
+uv run mypy src
+```
+
+To run the API locally while keeping Redis in Docker:
+
+```sh
+docker compose up -d redis
+uv run uvicorn baidu_buzz_proxy.main:app --reload
+```
+
+## Production deployment
+
+Every push to `main` is tested and published to GitHub Container Registry with an immutable
+`sha-<commit>` tag. Production deployment is a separate manual GitHub Actions workflow so
+an update cannot unexpectedly interrupt a long-running transfer.
+
+See [VPS deployment](docs/VPS_DEPLOYMENT.md) for the Ubuntu setup, SSH key, GitHub
+environment secrets, HTTPS, health checks, and rollback procedure.
+
+## License
+
+Released under the [MIT License](LICENSE).
