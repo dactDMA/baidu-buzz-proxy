@@ -109,7 +109,10 @@ Never commit `.env`, Baidu cookies, Buzzheavier credentials, or administrator to
 environment variable. When configured, the deployment stores it in a file inside a
 mode-`700` host directory and mounts only that file read-only into the container. The
 container refreshes BaiduPCS-Go login state when the cookie changes or the saved session
-expires. Leaving it empty preserves manual BaiduPCS-Go login behavior.
+expires. Its value uses the one-line `BDUSS=...; STOKEN=...` format without a `Cookie:`
+prefix or surrounding quotes. Leaving it empty preserves manual BaiduPCS-Go login behavior.
+See [VPS deployment](docs/VPS_DEPLOYMENT.md#baidu-cookie-format) for the complete GitHub
+secret list and cookie examples.
 
 ## Persistent data
 

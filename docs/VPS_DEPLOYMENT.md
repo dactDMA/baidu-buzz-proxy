@@ -66,12 +66,36 @@ Add the application secrets to the same `production` environment:
 | `BBP_ADMIN_JWT_SECRET` | No | Independent random signing key |
 | `BBP_BUZZHEAVIER_ACCESS_TOKEN` | No | Token for account-owned uploads |
 | `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key |
-| `BBP_BAIDU_COOKIES` | No | Complete one-line Baidu `Cookie` header |
+| `BBP_BAIDU_COOKIES` | No | One-line Baidu cookie value, without the `Cookie:` prefix |
 
-The optional Baidu value should contain at least valid `BDUSS` and `STOKEN` cookies. Do not
-add surrounding quotes or a line break. The workflow transfers it separately and stores it
-as `/opt/baidu-buzz-proxy/.runtime-secrets/baidu-cookies`. The parent directory has mode
-`700`; the file is mounted read-only into the non-root application container.
+`BBP_ADMIN_JWT_SECRET` may be left unset. In that case, the application derives its JWT
+signing key from `BBP_ADMIN_ACCESS_TOKEN`. `BBP_BUZZHEAVIER_ACCESS_TOKEN` may also be left
+unset because anonymous Buzzheavier uploads are supported.
+
+### Baidu cookie format
+
+The `BBP_BAIDU_COOKIES` secret must contain the cookie value exactly as a browser sends it,
+all on one line. It must contain valid `BDUSS` and `STOKEN` entries:
+
+```text
+BDUSS=your-bduss-value; STOKEN=your-stoken-value
+```
+
+Additional Baidu cookies are accepted and may be kept in the same semicolon-separated
+line:
+
+```text
+BAIDUID=your-baiduid-value; BDUSS=your-bduss-value; STOKEN=your-stoken-value; PANWEB=1
+```
+
+Do not add a `Cookie:` prefix, surrounding quotes, Markdown backticks, or a line break.
+Copy only the value following the `Cookie:` request-header name in browser developer tools.
+Treat the value as an account credential: store it only as a GitHub Environment secret and
+replace it when the Baidu session expires or is revoked.
+
+The workflow transfers the cookie separately and stores it as
+`/opt/baidu-buzz-proxy/.runtime-secrets/baidu-cookies`. The parent directory has mode `700`;
+the file is mounted read-only into the non-root application container.
 
 Non-secret settings can be added under **Environment variables**. Missing variables use
 these defaults:
