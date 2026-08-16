@@ -4,7 +4,9 @@ set -eu
 baidu_dir=/app/data/baidu
 baidu_binary="$baidu_dir/BaiduPCS-Go"
 baidu_cookies_file=/run/secrets/baidu-cookies
+baidu_config_secret=/run/secrets/baidu-pcs-config
 managed_cookie_digest="$baidu_dir/managed-cookie.sha256"
+managed_config_digest="$baidu_dir/managed-config.sha256"
 baidu_config="$baidu_dir/pcs_config.json"
 managed_login_backup="$baidu_dir/pcs_config.before-managed-login"
 login_attempts="${BBP_MANAGED_LOGIN_ATTEMPTS:-3}"
@@ -34,6 +36,23 @@ quota_is_valid() {
     esac
 }
 
+quota_is_valid_with_retries() {
+    attempt=1
+    retry_delay="$initial_retry_delay"
+    while [ "$attempt" -le "$login_attempts" ]; do
+        if quota_is_valid; then
+            return 0
+        fi
+        if [ "$attempt" -lt "$login_attempts" ]; then
+            echo "Baidu did not respond in time; retrying in ${retry_delay}s" >&2
+            sleep "$retry_delay"
+            retry_delay=$((retry_delay * 2))
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
 if [ -f "$managed_login_backup" ]; then
     if quota_is_valid; then
         rm -f "$managed_login_backup"
@@ -42,7 +61,46 @@ if [ -f "$managed_login_backup" ]; then
     fi
 fi
 
-if [ -f "$baidu_cookies_file" ] && [ -s "$baidu_cookies_file" ]; then
+if [ -f "$baidu_config_secret" ] && [ -s "$baidu_config_secret" ]; then
+    current_digest="$(sha256sum "$baidu_config_secret" | awk '{print $1}')"
+    stored_digest=""
+    if [ -f "$managed_config_digest" ]; then
+        stored_digest="$(sed -n '1p' "$managed_config_digest")"
+    fi
+
+    if [ "$current_digest" != "$stored_digest" ] || [ ! -s "$baidu_config" ]; then
+        if ! python -c 'import json, sys; value = json.load(open(sys.argv[1], encoding="utf-8-sig")); assert isinstance(value, dict)' "$baidu_config_secret"; then
+            echo "Managed BaiduPCS-Go configuration is not valid JSON" >&2
+            exit 1
+        fi
+
+        had_previous_config=0
+        if [ -f "$baidu_config" ]; then
+            cp -p "$baidu_config" "$managed_login_backup"
+            had_previous_config=1
+        fi
+        cp "$baidu_config_secret" "$baidu_config.tmp"
+        chmod 600 "$baidu_config.tmp"
+        mv -f "$baidu_config.tmp" "$baidu_config"
+
+        echo "Validating managed BaiduPCS-Go configuration" >&2
+        if ! quota_is_valid_with_retries; then
+            if [ "$had_previous_config" -eq 1 ] && [ -f "$managed_login_backup" ]; then
+                mv -f "$managed_login_backup" "$baidu_config"
+            else
+                rm -f "$baidu_config" "$managed_login_backup"
+            fi
+            echo "Managed BaiduPCS-Go configuration validation failed" >&2
+            exit 1
+        fi
+
+        temporary_digest="$managed_config_digest.tmp"
+        printf '%s\n' "$current_digest" > "$temporary_digest"
+        chmod 600 "$temporary_digest"
+        mv -f "$temporary_digest" "$managed_config_digest"
+        rm -f "$managed_login_backup" "$managed_cookie_digest"
+    fi
+elif [ -f "$baidu_cookies_file" ] && [ -s "$baidu_cookies_file" ]; then
     current_digest="$(sha256sum "$baidu_cookies_file" | awk '{print $1}')"
     stored_digest=""
     if [ -f "$managed_cookie_digest" ]; then
