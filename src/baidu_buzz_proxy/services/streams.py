@@ -93,10 +93,16 @@ def _download_error_detail(error: Exception | None) -> str:
     return str(error)
 
 
-def _cdn_request_headers(request: _CdnRequest, headers: dict[str, str]) -> dict[str, str]:
-    if request.authority is None:
-        return headers
-    return {**headers, "Host": request.authority}
+def _cdn_request_headers(
+    request: _CdnRequest, headers: dict[str, str], cookie_header: str = ""
+) -> dict[str, str]:
+    result = headers.copy()
+    host = (urlsplit(request.url).hostname or "").lower()
+    if cookie_header and host.endswith(".baidupcs.com"):
+        result["Cookie"] = cookie_header
+    if request.authority is not None:
+        result["Host"] = request.authority
+    return result
 
 
 def _follow_pinned_https_redirect(request: _CdnRequest, location: str) -> _CdnRequest:
@@ -182,6 +188,7 @@ async def _select_async_download_urls(
     client: httpx.AsyncClient,
     urls: tuple[str, ...],
     status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> tuple[str, ...]:
     if not any((urlsplit(url).hostname or "").endswith(".baidupcs.com") for url in urls):
         return urls
@@ -204,7 +211,7 @@ async def _select_async_download_urls(
                 async with client.stream(
                     "GET",
                     request.url,
-                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}),
+                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}, cookie_header),
                     timeout=_CDN_PROBE_TIMEOUT,
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
@@ -237,6 +244,7 @@ def _select_sync_download_urls(
     client: httpx.Client,
     urls: tuple[str, ...],
     status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> tuple[str, ...]:
     if not any((urlsplit(url).hostname or "").endswith(".baidupcs.com") for url in urls):
         return urls
@@ -259,7 +267,7 @@ def _select_sync_download_urls(
                 with client.stream(
                     "GET",
                     request.url,
-                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}),
+                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}, cookie_header),
                     timeout=_CDN_PROBE_TIMEOUT,
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
@@ -296,6 +304,7 @@ async def _download_async_segment(
     segment_size: int,
     retries: int,
     route_status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> bytes:
     start, end = _segment_bounds(index, source.size_bytes, segment_size)
     expected_size = end - start + 1
@@ -315,7 +324,9 @@ async def _download_async_segment(
                     "GET",
                     request.url,
                     headers=_cdn_request_headers(
-                        request, _download_headers(start, end, source.size_bytes)
+                        request,
+                        _download_headers(start, end, source.size_bytes),
+                        cookie_header,
                     ),
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
@@ -358,6 +369,7 @@ async def stream_baidu_file(
     retries: int = 5,
     transport: httpx.AsyncBaseTransport | None = None,
     on_route_status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> AsyncIterator[bytes]:
     if source.size_bytes <= 0:
         return
@@ -380,7 +392,12 @@ async def stream_baidu_file(
     ) as client:
         source = replace(
             source,
-            urls=await _select_async_download_urls(client, source.urls, status=on_route_status),
+            urls=await _select_async_download_urls(
+                client,
+                source.urls,
+                status=on_route_status,
+                cookie_header=cookie_header,
+            ),
         )
         try:
             while next_submit < concurrency:
@@ -392,6 +409,7 @@ async def stream_baidu_file(
                         segment_size,
                         retries,
                         on_route_status,
+                        cookie_header,
                     )
                 )
                 next_submit += 1
@@ -406,6 +424,7 @@ async def stream_baidu_file(
                             segment_size,
                             retries,
                             on_route_status,
+                            cookie_header,
                         )
                     )
                     next_submit += 1
@@ -425,6 +444,7 @@ def _download_sync_segment(
     segment_size: int,
     retries: int,
     route_status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> bytes:
     start, end = _segment_bounds(index, source.size_bytes, segment_size)
     expected_size = end - start + 1
@@ -444,7 +464,9 @@ def _download_sync_segment(
                     "GET",
                     request.url,
                     headers=_cdn_request_headers(
-                        request, _download_headers(start, end, source.size_bytes)
+                        request,
+                        _download_headers(start, end, source.size_bytes),
+                        cookie_header,
                     ),
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
@@ -487,6 +509,7 @@ def _sync_file_chunks(
     retries: int = 5,
     transport: httpx.BaseTransport | None = None,
     on_route_status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> Iterator[bytes]:
     if source.size_bytes <= 0:
         return
@@ -509,7 +532,12 @@ def _sync_file_chunks(
     ) as client:
         source = replace(
             source,
-            urls=_select_sync_download_urls(client, source.urls, status=on_route_status),
+            urls=_select_sync_download_urls(
+                client,
+                source.urls,
+                status=on_route_status,
+                cookie_header=cookie_header,
+            ),
         )
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             while next_submit < concurrency:
@@ -521,6 +549,7 @@ def _sync_file_chunks(
                     segment_size,
                     retries,
                     on_route_status,
+                    cookie_header,
                 )
                 next_submit += 1
             try:
@@ -535,6 +564,7 @@ def _sync_file_chunks(
                             segment_size,
                             retries,
                             on_route_status,
+                            cookie_header,
                         )
                         next_submit += 1
                     for offset in range(0, len(data), chunk_size):
@@ -571,6 +601,7 @@ def build_zip_stream(
     transport: httpx.BaseTransport | None = None,
     on_file_start: FileStartCallback | None = None,
     on_route_status: RouteStatusCallback | None = None,
+    cookie_header: str = "",
 ) -> AsyncIterator[bytes]:
     archive = zipstream.ZipStream(compress_type=zipfile.ZIP_STORED, sized=False)
     for index, source in enumerate(sources, start=1):
@@ -581,6 +612,7 @@ def build_zip_stream(
             retries=retries,
             transport=transport,
             on_route_status=on_route_status,
+            cookie_header=cookie_header,
         )
         if on_file_start:
             chunks = _notify_file_start(chunks, index, source, on_file_start)

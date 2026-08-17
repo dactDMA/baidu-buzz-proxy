@@ -96,6 +96,7 @@ async def test_single_segment_uses_plain_get() -> None:
 
     async def handler(request: httpx.Request) -> httpx.Response:
         assert "Range" not in request.headers
+        assert "Cookie" not in request.headers
         return httpx.Response(200, content=content)
 
     source = SourceFile("small.bin", len(content), ("https://source.test/file",))
@@ -109,6 +110,7 @@ async def test_single_segment_uses_plain_get() -> None:
                 concurrency=1,
                 retries=0,
                 transport=httpx.MockTransport(handler),
+                cookie_header="BDUSS=test; STOKEN=token",
             )
         ]
     )
@@ -179,6 +181,7 @@ async def test_baidu_download_selects_an_available_cdn_domain() -> None:
                 concurrency=1,
                 retries=0,
                 transport=httpx.MockTransport(handler),
+                cookie_header="BDUSS=test; STOKEN=token",
             )
         ]
     )
@@ -225,6 +228,7 @@ async def test_baidu_redirect_stays_on_the_selected_https_cdn(
         host = request.url.host
         if host != "nd7.baidupcs.com":
             raise httpx.ConnectTimeout("unreachable CDN", request=request)
+        assert request.headers["Cookie"] == "BDUSS=test; STOKEN=token"
         if request.url.path == "/file/original":
             return httpx.Response(
                 302,
@@ -254,6 +258,7 @@ async def test_baidu_redirect_stays_on_the_selected_https_cdn(
                 concurrency=1,
                 retries=0,
                 transport=httpx.MockTransport(handler),
+                cookie_header="BDUSS=test; STOKEN=token",
             )
         ]
     )
@@ -276,6 +281,7 @@ async def test_zip_redirect_stays_on_the_selected_https_cdn(
         host = request.url.host
         if host != "nd7.baidupcs.com":
             raise httpx.ConnectTimeout("unreachable CDN", request=request)
+        assert request.headers["Cookie"] == "BDUSS=test; STOKEN=token"
         if request.url.path == "/file/original":
             return httpx.Response(
                 302,
@@ -304,6 +310,7 @@ async def test_zip_redirect_stays_on_the_selected_https_cdn(
                 concurrency=1,
                 retries=0,
                 transport=httpx.MockTransport(handler),
+                cookie_header="BDUSS=test; STOKEN=token",
             )
         ]
     )

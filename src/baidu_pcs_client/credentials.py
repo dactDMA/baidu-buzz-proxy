@@ -34,6 +34,9 @@ class Credentials:
         if not self.cookies.get("BDUSS"):
             raise BaiduPCSAuthenticationError("load credentials", "BDUSS is missing")
 
+    def cookie_header(self) -> str:
+        return "; ".join(f"{name}={value}" for name, value in self.cookies.items())
+
     @classmethod
     def from_cookie_header(
         cls,
