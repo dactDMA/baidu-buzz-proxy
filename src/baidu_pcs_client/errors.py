@@ -31,6 +31,8 @@ _ERROR_MESSAGES = {
 def english_error_message(operation: str, code: int, remote_message: str) -> str:
     if operation == "verify share" and code in {-12, -9}:
         return "The extraction code is incorrect"
+    if operation == "list share" and code == -9:
+        return "The share requires a valid extraction code"
     known = _ERROR_MESSAGES.get(code)
     if known:
         return known

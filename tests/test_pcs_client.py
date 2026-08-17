@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from baidu_pcs_client import BaiduPCSClient, BaiduPCSClientError, Credentials
+from baidu_pcs_client.errors import english_error_message
 
 
 def test_credentials_load_active_user_from_pcs_config(tmp_path: Path) -> None:
@@ -164,6 +165,7 @@ async def test_protected_share_verifies_code_before_import() -> None:
         nonlocal page_visits
         if request.url.path == "/s/1protected":
             page_visits += 1
+            assert "BDCLND=stale" not in request.headers.get("Cookie", "")
             return httpx.Response(
                 200,
                 content=f"<script>locals.mset({json.dumps(share_state)});</script>".encode(),
@@ -171,15 +173,22 @@ async def test_protected_share_verifies_code_before_import() -> None:
         if request.url.path == "/share/verify":
             body = parse_qs((await request.aread()).decode())
             assert body["pwd"] == ["2ac3"]
-            return httpx.Response(200, json={"errno": 0, "randsk": "verified"})
+            return httpx.Response(
+                200,
+                json={"errno": 0, "randsk": "verified"},
+                headers={"Set-Cookie": "BDCLND=fresh; Domain=.baidu.com; Path=/"},
+            )
         if request.url.path == "/share/list":
+            cookie = request.headers.get("Cookie", "")
+            assert "BDCLND=fresh" in cookie
+            assert "BDCLND=stale" not in cookie
             return httpx.Response(200, json={"errno": 0, "list": [{"fs_id": 123}]})
         if request.url.path == "/share/transfer":
             return httpx.Response(200, json={"errno": 0})
         return httpx.Response(404)
 
     client = BaiduPCSClient(
-        Credentials.from_cookie_header("BDUSS=test; STOKEN=token", uid=42),
+        Credentials.from_cookie_header("BDUSS=test; STOKEN=token; BDCLND=stale", uid=42),
         transport=httpx.MockTransport(handler),
     )
     try:
@@ -188,6 +197,12 @@ async def test_protected_share_verifies_code_before_import() -> None:
         await client.close()
 
     assert page_visits == 2
+
+
+def test_list_share_minus_nine_reports_extraction_code() -> None:
+    assert (
+        english_error_message("list share", -9, "") == "The share requires a valid extraction code"
+    )
 
 
 @pytest.mark.asyncio
