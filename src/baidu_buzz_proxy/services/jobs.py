@@ -37,12 +37,13 @@ class InvalidJobState(JobError):
     pass
 
 
-_UNSAFE_OUTPUT_RE = re.compile(r"[\x00-\x1f\x7f/\\]+")
+_UNSAFE_OUTPUT_RE = re.compile(r"[\x00-\x1f\x7f/\\#]+")
 
 
 def safe_output_name(value: str, fallback: str) -> str:
-    cleaned = _UNSAFE_OUTPUT_RE.sub("_", value).strip(" .")
-    return (cleaned or fallback)[:200]
+    candidate = value if value.strip(" .") else fallback
+    cleaned = _UNSAFE_OUTPUT_RE.sub("_", candidate).strip(" .")
+    return (cleaned or "download")[:200]
 
 
 class JobService:
