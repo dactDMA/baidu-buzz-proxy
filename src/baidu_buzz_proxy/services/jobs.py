@@ -16,7 +16,7 @@ from baidu_buzz_proxy.config import Settings
 from baidu_buzz_proxy.database import Database
 from baidu_buzz_proxy.models import TERMINAL_JOB_STATES, Job, JobItem, JobState
 from baidu_buzz_proxy.security import hash_secret, new_creator_secret, verify_secret
-from baidu_buzz_proxy.services.baidu import BaiduError, BaiduPCSClient
+from baidu_buzz_proxy.services.baidu import BaiduError, BaiduItem, BaiduPCSClient
 from baidu_buzz_proxy.services.buzzheavier import BuzzMultipartClient
 from baidu_buzz_proxy.services.streams import SourceFile, build_zip_stream, stream_baidu_file
 
@@ -38,12 +38,27 @@ class InvalidJobState(JobError):
 
 
 _UNSAFE_OUTPUT_RE = re.compile(r"[\x00-\x1f\x7f/\\#]+")
+_IMPORT_RETRY_DELAYS = (5, 15, 30)
+_TRANSIENT_IMPORT_ERRORS = (
+    "返回json解析错误",
+    "网络错误",
+    "访问分享页失败",
+    "提交分享项查询请求时发生错误",
+    "timed out",
+    "deadline exceeded",
+    "connection reset",
+)
 
 
 def safe_output_name(value: str, fallback: str) -> str:
     candidate = value if value.strip(" .") else fallback
     cleaned = _UNSAFE_OUTPUT_RE.sub("_", candidate).strip(" .")
     return (cleaned or "download")[:200]
+
+
+def is_retryable_import_error(error: BaiduError) -> bool:
+    message = str(error).lower()
+    return any(fragment.lower() in message for fragment in _TRANSIENT_IMPORT_ERRORS)
 
 
 class JobService:
@@ -244,7 +259,7 @@ class JobService:
             await self.baidu.mkdir(job.temp_path)
             try:
                 await self.baidu.change_directory(job.temp_path)
-                await self.baidu.import_share(job.share_url, job.extraction_code)
+                items = await self._import_share_with_retries(job)
             finally:
                 await self.baidu.change_directory("/")
 
@@ -253,8 +268,9 @@ class JobService:
             await self._cleanup_remote(public_id)
             return
 
-        await self._set_message(public_id, "Reading the imported file list")
-        items = await self.baidu.list_tree(job.temp_path)
+        if items is None:
+            await self._set_message(public_id, "Reading the imported file list")
+            items = await self.baidu.list_tree(job.temp_path)
         if not items:
             raise JobError("The share imported successfully but contains no files")
         fs_id = await self.baidu.metadata_fs_id(job.temp_path)
@@ -280,6 +296,30 @@ class JobService:
                 for item in items
             )
             await session.commit()
+
+    async def _import_share_with_retries(self, job: Job) -> list[BaiduItem] | None:
+        attempts = len(_IMPORT_RETRY_DELAYS) + 1
+        for attempt in range(attempts):
+            try:
+                await self.baidu.import_share(job.share_url, job.extraction_code)
+                return None
+            except BaiduError as error:
+                try:
+                    imported_items = await self.baidu.list_tree(job.temp_path)
+                except BaiduError:
+                    imported_items = []
+                if imported_items:
+                    return imported_items
+                if attempt >= len(_IMPORT_RETRY_DELAYS) or not is_retryable_import_error(error):
+                    raise
+                delay = _IMPORT_RETRY_DELAYS[attempt]
+                await self._set_message(
+                    job.public_id,
+                    f"Baidu returned a temporary error; retrying import "
+                    f"{attempt + 2} of {attempts} in {delay}s",
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def _transfer_job(self, public_id: str) -> None:
         job = await self.get_job(public_id)

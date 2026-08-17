@@ -7,7 +7,8 @@ import pytest
 from baidu_buzz_proxy.config import Settings
 from baidu_buzz_proxy.database import Database
 from baidu_buzz_proxy.models import Job, JobItem, JobState
-from baidu_buzz_proxy.services.baidu import BaiduItem
+from baidu_buzz_proxy.services import jobs as jobs_module
+from baidu_buzz_proxy.services.baidu import BaiduError, BaiduItem
 from baidu_buzz_proxy.services.jobs import JobService, safe_output_name
 from baidu_buzz_proxy.services.quota import QuotaSnapshot
 
@@ -67,12 +68,33 @@ class FakeBuzz:
         pass
 
 
+class FlakyImportBaidu(FakeBaidu):
+    def __init__(self) -> None:
+        super().__init__()
+        self.import_calls = 0
+
+    async def import_share(self, share_url: str, extraction_code: str) -> None:
+        self.import_calls += 1
+        if self.import_calls == 1:
+            raise BaiduError("分享链接转存到网盘失败: 返回json解析错误")
+
+    async def list_tree(self, root: str) -> list[BaiduItem]:
+        if self.import_calls == 1:
+            return []
+        return await super().list_tree(root)
+
+
 def test_safe_output_name_keeps_unicode_and_removes_path_characters() -> None:
     assert safe_output_name("资料/base?#.zip", "fallback.zip") == "资料_base?_.zip"
 
 
 def test_safe_output_name_sanitizes_the_automatic_fallback() -> None:
     assert safe_output_name("", "Lovely#remake.zip") == "Lovely_remake.zip"
+
+
+def test_only_temporary_baidu_import_errors_are_retried() -> None:
+    assert jobs_module.is_retryable_import_error(BaiduError("返回json解析错误"))
+    assert not jobs_module.is_retryable_import_error(BaiduError("提取码错误"))
 
 
 @pytest.mark.asyncio
@@ -164,6 +186,28 @@ async def test_job_lifecycle_imports_transfers_and_cleans(tmp_path: Path) -> Non
         assert completed.cleanup_completed is True
         assert baidu.removed == [created.temp_path]
         assert baidu.deleted == ["folder-1"]
+    finally:
+        await service.stop()
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_import_retries_a_temporary_baidu_json_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jobs_module, "_IMPORT_RETRY_DELAYS", (0,))
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'retry.db'}")
+    await database.initialize()
+    baidu = FlakyImportBaidu()
+    service = JobService(database, Settings(max_active_jobs=1), baidu, FakeBuzz())  # type: ignore[arg-type]
+    await service.start()
+    try:
+        created, _ = await service.create_job("https://pan.baidu.com/s/test", "abcd")
+        imported = await _wait_for_state(service, created.public_id, JobState.AWAITING_SELECTION)
+
+        assert baidu.import_calls == 2
+        assert imported.status_message == "Choose files or folders to transfer"
+        assert len(imported.items) == 1
     finally:
         await service.stop()
         await database.close()
