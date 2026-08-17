@@ -25,6 +25,9 @@ class SourceFile:
     urls: tuple[str, ...]
 
 
+FileStartCallback = Callable[[int, SourceFile], None]
+
+
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$", re.I)
 
 
@@ -252,21 +255,35 @@ def build_zip_stream(
     concurrency: int = 10,
     retries: int = 5,
     transport: httpx.BaseTransport | None = None,
+    on_file_start: FileStartCallback | None = None,
 ) -> AsyncIterator[bytes]:
     archive = zipstream.ZipStream(compress_type=zipfile.ZIP_STORED, sized=False)
-    for source in sources:
+    for index, source in enumerate(sources, start=1):
+        chunks = _sync_file_chunks(
+            source,
+            segment_size=segment_size,
+            concurrency=concurrency,
+            retries=retries,
+            transport=transport,
+        )
+        if on_file_start:
+            chunks = _notify_file_start(chunks, index, source, on_file_start)
         archive.add(
-            _sync_file_chunks(
-                source,
-                segment_size=segment_size,
-                concurrency=concurrency,
-                retries=retries,
-                transport=transport,
-            ),
+            chunks,
             source.archive_name,
             size=source.size_bytes,
         )
     return async_from_sync(iter(archive))
+
+
+def _notify_file_start(
+    chunks: Iterator[bytes],
+    index: int,
+    source: SourceFile,
+    callback: FileStartCallback,
+) -> Iterator[bytes]:
+    callback(index, source)
+    yield from chunks
 
 
 async def track_progress(

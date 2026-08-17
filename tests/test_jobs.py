@@ -34,7 +34,16 @@ class FakeBaidu:
     async def import_share(self, share_url: str, extraction_code: str) -> None:
         pass
 
-    async def list_tree(self, root: str) -> list[BaiduItem]:
+    async def list_directory(self, directory: str, root: str) -> list[BaiduItem]:
+        return self._items(root)
+
+    async def list_tree(self, root: str, progress: Any = None) -> list[BaiduItem]:
+        if progress:
+            await progress(root, 0, 0)
+        return self._items(root)
+
+    @staticmethod
+    def _items(root: str) -> list[BaiduItem]:
         return [
             BaiduItem(
                 fs_id="file-1",
@@ -45,6 +54,11 @@ class FakeBaidu:
                 size_bytes=100,
             )
         ]
+
+    async def metadata_many(self, remote_paths: list[str], progress: Any = None) -> list[Any]:
+        if progress:
+            await progress(0, len(remote_paths), remote_paths[0])
+        return [("file-1", 100) for _ in remote_paths]
 
     async def metadata_fs_id(self, remote_path: str) -> str:
         return "folder-1"
@@ -78,10 +92,10 @@ class FlakyImportBaidu(FakeBaidu):
         if self.import_calls == 1:
             raise BaiduError("分享链接转存到网盘失败: 返回json解析错误")
 
-    async def list_tree(self, root: str) -> list[BaiduItem]:
+    async def list_directory(self, directory: str, root: str) -> list[BaiduItem]:
         if self.import_calls == 1:
             return []
-        return await super().list_tree(root)
+        return await super().list_directory(directory, root)
 
 
 def test_safe_output_name_keeps_unicode_and_removes_path_characters() -> None:

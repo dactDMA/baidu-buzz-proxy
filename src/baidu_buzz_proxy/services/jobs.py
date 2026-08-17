@@ -16,7 +16,7 @@ from baidu_buzz_proxy.config import Settings
 from baidu_buzz_proxy.database import Database
 from baidu_buzz_proxy.models import TERMINAL_JOB_STATES, Job, JobItem, JobState
 from baidu_buzz_proxy.security import hash_secret, new_creator_secret, verify_secret
-from baidu_buzz_proxy.services.baidu import BaiduError, BaiduItem, BaiduPCSClient
+from baidu_buzz_proxy.services.baidu import BaiduError, BaiduPCSClient
 from baidu_buzz_proxy.services.buzzheavier import BuzzMultipartClient
 from baidu_buzz_proxy.services.streams import SourceFile, build_zip_stream, stream_baidu_file
 
@@ -254,12 +254,15 @@ class JobService:
             raise JobError("Baidu free space is below the configured reserve")
 
         async with self._baidu_mutation_lock():
+            if await self._is_cancelled(public_id):
+                await self._set_cancelled(public_id)
+                return
             await self._set_message(public_id, "Importing the public share into Baidu")
             await self.baidu.mkdir("/ProxyJobs")
             await self.baidu.mkdir(job.temp_path)
             try:
                 await self.baidu.change_directory(job.temp_path)
-                items = await self._import_share_with_retries(job)
+                await self._import_share_with_retries(job)
             finally:
                 await self.baidu.change_directory("/")
 
@@ -268,9 +271,14 @@ class JobService:
             await self._cleanup_remote(public_id)
             return
 
-        if items is None:
-            await self._set_message(public_id, "Reading the imported file list")
-            items = await self.baidu.list_tree(job.temp_path)
+        async def scan_progress(directory: str, directories: int, items_found: int) -> None:
+            display_path = directory if len(directory) <= 130 else f"...{directory[-127:]}"
+            await self._set_message(
+                public_id,
+                f"Scanning directory {directories + 1}: {items_found} items found · {display_path}",
+            )
+
+        items = await self.baidu.list_tree(job.temp_path, progress=scan_progress)
         if not items:
             raise JobError("The share imported successfully but contains no files")
         fs_id = await self.baidu.metadata_fs_id(job.temp_path)
@@ -297,19 +305,19 @@ class JobService:
             )
             await session.commit()
 
-    async def _import_share_with_retries(self, job: Job) -> list[BaiduItem] | None:
+    async def _import_share_with_retries(self, job: Job) -> None:
         attempts = len(_IMPORT_RETRY_DELAYS) + 1
         for attempt in range(attempts):
             try:
                 await self.baidu.import_share(job.share_url, job.extraction_code)
-                return None
+                return
             except BaiduError as error:
                 try:
-                    imported_items = await self.baidu.list_tree(job.temp_path)
+                    imported_items = await self.baidu.list_directory(job.temp_path, job.temp_path)
                 except BaiduError:
                     imported_items = []
                 if imported_items:
-                    return imported_items
+                    return
                 if attempt >= len(_IMPORT_RETRY_DELAYS) or not is_retryable_import_error(error):
                     raise
                 delay = _IMPORT_RETRY_DELAYS[attempt]
@@ -330,10 +338,35 @@ class JobService:
         files = [item for item in job.items if item.selected and not item.is_dir]
         if not files:
             raise JobError("No source files were selected")
-        await self._set_state(public_id, JobState.TRANSFERRING, "Resolving Baidu links")
+        await self._set_state(public_id, JobState.TRANSFERRING, "Reading exact file metadata")
+
+        async def metadata_progress(start: int, end: int, remote_path: str) -> None:
+            display_name = PurePosixPath(remote_path).name
+            if len(display_name) > 140:
+                display_name = f"{display_name[:137]}..."
+            await self._set_message(
+                public_id,
+                f"Reading exact metadata {start + 1}-{end} of {len(files)}: {display_name}",
+            )
+
+        metadata = await self.baidu.metadata_many(
+            [item.remote_path for item in files], progress=metadata_progress
+        )
+        exact_total = sum(size for _, size in metadata)
+        async with self.database.sessions() as session:
+            for item, (fs_id, size) in zip(files, metadata, strict=True):
+                await session.execute(
+                    update(JobItem)
+                    .where(JobItem.id == item.id)
+                    .values(fs_id=fs_id, size_bytes=size)
+                )
+            await session.execute(
+                update(Job).where(Job.public_id == public_id).values(total_bytes=exact_total)
+            )
+            await session.commit()
 
         sources: list[SourceFile] = []
-        for index, item in enumerate(files, start=1):
+        for index, (item, (_, exact_size)) in enumerate(zip(files, metadata, strict=True), start=1):
             display_name = item.name if len(item.name) <= 160 else f"{item.name[:157]}..."
             await self._set_message(
                 public_id,
@@ -343,7 +376,7 @@ class JobService:
             sources.append(
                 SourceFile(
                     archive_name=item.relative_path,
-                    size_bytes=item.size_bytes,
+                    size_bytes=exact_size,
                     urls=tuple(urls),
                 )
             )
@@ -354,6 +387,18 @@ class JobService:
         segment_size = self.settings.baidu_range_size_mib * 1024**2
         concurrency = self.settings.baidu_download_concurrency
         retries = self.settings.baidu_download_retries
+        upload_status = self._file_transfer_status(1, len(sources), sources[0].archive_name)
+        loop = asyncio.get_running_loop()
+
+        def file_started(index: int, source: SourceFile) -> None:
+            nonlocal upload_status
+            upload_status = self._file_transfer_status(index, len(sources), source.archive_name)
+            current_status = upload_status
+            loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._set_message(public_id, current_status),
+            )
+
         stream = (
             stream_baidu_file(
                 sources[0],
@@ -367,6 +412,7 @@ class JobService:
                 segment_size=segment_size,
                 concurrency=concurrency,
                 retries=retries,
+                on_file_start=file_started,
             )
         )
 
@@ -375,7 +421,7 @@ class JobService:
                 await session.execute(
                     update(Job)
                     .where(Job.public_id == public_id)
-                    .values(transferred_bytes=value, status_message="Uploading to Buzzheavier")
+                    .values(transferred_bytes=value, status_message=upload_status)
                 )
                 await session.commit()
 
@@ -411,6 +457,11 @@ class JobService:
                 days=self.settings.job_page_ttl_days
             )
             await session.commit()
+
+    @staticmethod
+    def _file_transfer_status(index: int, total: int, archive_name: str) -> str:
+        display_name = archive_name if len(archive_name) <= 140 else f"...{archive_name[-137:]}"
+        return f"Streaming file {index} of {total} to Buzzheavier: {display_name}"
 
     async def _cleanup_remote(self, public_id: str) -> Exception | None:
         try:

@@ -138,13 +138,14 @@ async def test_zip_stream_uses_ordered_parallel_ranges() -> None:
     active = 0
     max_active = 0
     lock = threading.Lock()
+    started: list[tuple[int, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal active, max_active
         with lock:
             active += 1
             max_active = max(max_active, active)
-        time.sleep(0.02)
+        time.sleep(0.05)
         with lock:
             active -= 1
         return range_response(request, content)
@@ -159,6 +160,7 @@ async def test_zip_stream_uses_ordered_parallel_ranges() -> None:
                 concurrency=3,
                 retries=0,
                 transport=httpx.MockTransport(handler),
+                on_file_start=lambda index, item: started.append((index, item.archive_name)),
             )
         ]
     )
@@ -167,3 +169,4 @@ async def test_zip_stream_uses_ordered_parallel_ranges() -> None:
         assert archive.read("folder/file.bin") == content
         assert archive.testzip() is None
     assert max_active == 3
+    assert started == [(1, "folder/file.bin")]
