@@ -97,7 +97,7 @@ Production deployments can additionally synchronize these values from the GitHub
 | --- | --- | --- |
 | `BBP_BUZZHEAVIER_ACCESS_TOKEN` | Optional token for account-owned uploads | Empty (anonymous) |
 | `BBP_BUZZHEAVIER_BASE_URL` | Buzzheavier API origin | `https://buzzheavier.com` |
-| `BBP_BUZZHEAVIER_PART_SIZE_MIB` | Multipart chunk size | `100` |
+| `BBP_BUZZHEAVIER_PART_SIZE_MIB` | Multipart chunk size | `16` |
 | `BBP_BUZZHEAVIER_PART_CONCURRENCY` | Concurrent chunks per job | `2` |
 | `BBP_BUZZHEAVIER_PART_RETRIES` | Retry count for one failed chunk | `5` |
 | `BBP_ADMIN_ACCESS_TOKEN` | Password used to access administrative functions | Required |

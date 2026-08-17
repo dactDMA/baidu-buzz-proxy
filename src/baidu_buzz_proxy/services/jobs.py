@@ -384,10 +384,13 @@ class JobService:
         concurrency = self.settings.baidu_download_concurrency
         retries = self.settings.baidu_download_retries
         upload_status = self._file_transfer_status(1, len(sources), sources[0].archive_name)
+        current_source_name = sources[0].archive_name
         loop = asyncio.get_running_loop()
+        last_prepare_update = 0.0
 
         def file_started(index: int, source: SourceFile) -> None:
-            nonlocal upload_status
+            nonlocal current_source_name, upload_status
+            current_source_name = source.archive_name
             upload_status = self._file_transfer_status(index, len(sources), source.archive_name)
             current_status = upload_status
             loop.call_soon_threadsafe(
@@ -421,6 +424,24 @@ class JobService:
                 )
                 await session.commit()
 
+        async def prepare_progress(value: int) -> None:
+            nonlocal last_prepare_update
+            now = loop.time()
+            target = min(self.buzz.part_size, job.total_bytes)
+            if value < target and now - last_prepare_update < 0.75:
+                return
+            last_prepare_update = now
+            display_name = (
+                current_source_name
+                if len(current_source_name) <= 120
+                else f"...{current_source_name[-117:]}"
+            )
+            await self._set_message(
+                public_id,
+                f"Preparing the first Buzzheavier part from Baidu: "
+                f"{self._format_size(value)} / {self._format_size(target)} · {display_name}",
+            )
+
         async def cancelled() -> bool:
             return await self._is_cancelled(public_id)
 
@@ -429,6 +450,7 @@ class JobService:
                 job.output_name,
                 stream,
                 progress=progress,
+                prepare_progress=prepare_progress,
                 is_cancelled=cancelled,
             )
         except asyncio.CancelledError:
@@ -458,6 +480,16 @@ class JobService:
     def _file_transfer_status(index: int, total: int, archive_name: str) -> str:
         display_name = archive_name if len(archive_name) <= 140 else f"...{archive_name[-137:]}"
         return f"Streaming file {index} of {total} to Buzzheavier: {display_name}"
+
+    @staticmethod
+    def _format_size(value: int) -> str:
+        if value >= 1024**3:
+            return f"{value / 1024**3:.2f} GiB"
+        if value >= 1024**2:
+            return f"{value / 1024**2:.2f} MiB"
+        if value >= 1024:
+            return f"{value / 1024:.2f} KiB"
+        return f"{value} B"
 
     async def _cleanup_remote(self, public_id: str) -> Exception | None:
         try:
