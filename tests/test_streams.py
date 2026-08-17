@@ -214,6 +214,98 @@ def test_zip_download_selects_an_available_cdn_domain(
 
 
 @pytest.mark.asyncio
+async def test_baidu_redirect_stays_on_the_selected_https_cdn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"sticky HTTPS redirect"
+    redirected_hosts: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if host != "nd7.baidupcs.com":
+            raise httpx.ConnectTimeout("unreachable CDN", request=request)
+        if request.url.path == "/file/original":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://bjbgp01.baidupcs.com/file/redirected?token=fresh"},
+            )
+        redirected_hosts.append(host)
+        if request.headers.get("Range") == "bytes=0-0":
+            return httpx.Response(206, content=content[:1])
+        return httpx.Response(200, content=content)
+
+    monkeypatch.setattr(streams_module, "_cdn_preference", None)
+    source = SourceFile(
+        "small.bin",
+        len(content),
+        ("https://nd7.baidupcs.com/file/original?token=old",),
+    )
+    downloaded = b"".join(
+        [
+            chunk
+            async for chunk in stream_baidu_file(
+                source,
+                chunk_size=4,
+                segment_size=64,
+                concurrency=1,
+                retries=0,
+                transport=httpx.MockTransport(handler),
+            )
+        ]
+    )
+
+    assert downloaded == content
+    assert redirected_hosts
+    assert set(redirected_hosts) == {"nd7.baidupcs.com"}
+
+
+@pytest.mark.asyncio
+async def test_zip_redirect_stays_on_the_selected_https_cdn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"sticky HTTPS ZIP redirect"
+    redirected_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if host != "nd7.baidupcs.com":
+            raise httpx.ConnectTimeout("unreachable CDN", request=request)
+        if request.url.path == "/file/original":
+            return httpx.Response(
+                302,
+                headers={"Location": "https://allall02.baidupcs.com/file/redirected"},
+            )
+        redirected_hosts.append(host)
+        if request.headers.get("Range"):
+            return range_response(request, content)
+        return httpx.Response(200, content=content)
+
+    monkeypatch.setattr(streams_module, "_cdn_preference", None)
+    source = SourceFile(
+        "folder/small.bin",
+        len(content),
+        ("https://nd7.baidupcs.com/file/original?token=old",),
+    )
+    archive_data = b"".join(
+        [
+            chunk
+            async for chunk in build_zip_stream(
+                [source],
+                segment_size=64,
+                concurrency=1,
+                retries=0,
+                transport=httpx.MockTransport(handler),
+            )
+        ]
+    )
+
+    with zipfile.ZipFile(io.BytesIO(archive_data)) as archive:
+        assert archive.read("folder/small.bin") == content
+    assert redirected_hosts
+    assert set(redirected_hosts) == {"nd7.baidupcs.com"}
+
+
+@pytest.mark.asyncio
 async def test_failed_range_retries_with_another_source_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

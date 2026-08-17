@@ -398,12 +398,24 @@ class JobService:
                 self._set_message(public_id, current_status),
             )
 
+        def route_status(message: str) -> None:
+            display_name = (
+                current_source_name
+                if len(current_source_name) <= 100
+                else f"...{current_source_name[-97:]}"
+            )
+            loop.call_soon_threadsafe(
+                asyncio.create_task,
+                self._set_message(public_id, f"{message} · {display_name}"),
+            )
+
         stream = (
             stream_baidu_file(
                 sources[0],
                 segment_size=segment_size,
                 concurrency=concurrency,
                 retries=retries,
+                on_route_status=route_status,
             )
             if len(sources) == 1 and not selected_directories
             else build_zip_stream(
@@ -412,6 +424,7 @@ class JobService:
                 concurrency=concurrency,
                 retries=retries,
                 on_file_start=file_started,
+                on_route_status=route_status,
             )
         )
 

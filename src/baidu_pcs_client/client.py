@@ -155,10 +155,13 @@ class BaiduPCSClient:
         urls = tuple(
             str(item["url"])
             for item in raw_urls
-            if isinstance(item, dict) and int(item.get("encrypt", 1)) == 0 and item.get("url")
+            if isinstance(item, dict)
+            and int(item.get("encrypt", 1)) == 0
+            and item.get("url")
+            and urlsplit(str(item["url"])).scheme.lower() == "https"
         )
         if not urls:
-            raise BaiduPCSClientError("locate download", f"Baidu returned no URL for {path}")
+            raise BaiduPCSClientError("locate download", f"Baidu returned no HTTPS URL for {path}")
         return DownloadLocation(path=path, urls=urls)
 
     async def locate_many(
