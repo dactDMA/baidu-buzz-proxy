@@ -25,6 +25,9 @@ class FakeBaidu:
     async def close(self) -> None:
         pass
 
+    def download_cookie_header(self) -> str:
+        return "BDUSS=test; STOKEN=token"
+
     async def quota(self) -> QuotaSnapshot:
         return QuotaSnapshot(total_bytes=5 * 1024**4, used_bytes=1024**4)
 

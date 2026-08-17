@@ -33,6 +33,9 @@ class BaiduClient:
     async def close(self) -> None:
         await self.client.close()
 
+    def download_cookie_header(self) -> str:
+        return self.client.credentials.cookie_header()
+
     async def quota(self) -> QuotaSnapshot:
         quota = await self.client.quota()
         return QuotaSnapshot(total_bytes=quota.total_bytes, used_bytes=quota.used_bytes)

@@ -383,6 +383,7 @@ class JobService:
         segment_size = self.settings.baidu_range_size_mib * 1024**2
         concurrency = self.settings.baidu_download_concurrency
         retries = self.settings.baidu_download_retries
+        cookie_header = self.baidu.download_cookie_header()
         upload_status = self._file_transfer_status(1, len(sources), sources[0].archive_name)
         current_source_name = sources[0].archive_name
         loop = asyncio.get_running_loop()
@@ -416,6 +417,7 @@ class JobService:
                 concurrency=concurrency,
                 retries=retries,
                 on_route_status=route_status,
+                cookie_header=cookie_header,
             )
             if len(sources) == 1 and not selected_directories
             else build_zip_stream(
@@ -425,6 +427,7 @@ class JobService:
                 retries=retries,
                 on_file_start=file_started,
                 on_route_status=route_status,
+                cookie_header=cookie_header,
             )
         )
 
