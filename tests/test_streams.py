@@ -8,6 +8,7 @@ import zipfile
 import httpx
 import pytest
 
+from baidu_buzz_proxy.services import streams as streams_module
 from baidu_buzz_proxy.services.streams import (
     SourceDownloadError,
     SourceFile,
@@ -143,6 +144,73 @@ async def test_download_failure_exposes_safe_http_status() -> None:
     message = str(raised.value)
     assert "HTTP 403 from source.test" in message
     assert "signed-value" not in message
+
+
+@pytest.mark.asyncio
+async def test_baidu_download_selects_an_available_cdn_domain() -> None:
+    content = b"available through fallback"
+    probes: set[str] = set()
+    downloads: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if request.headers.get("Range") == "bytes=0-0":
+            probes.add(host)
+            if host == "cdn.baidupcs.com":
+                return httpx.Response(206, content=content[:1])
+            raise httpx.ConnectTimeout("unreachable CDN", request=request)
+        downloads.append(host)
+        if host == "cdn.baidupcs.com":
+            return httpx.Response(200, content=content)
+        raise httpx.ConnectTimeout("unreachable CDN", request=request)
+
+    source = SourceFile(
+        "small.bin",
+        len(content),
+        ("https://blocked.baidupcs.com/file/test?signature=secret",),
+    )
+    downloaded = b"".join(
+        [
+            chunk
+            async for chunk in stream_baidu_file(
+                source,
+                chunk_size=4,
+                segment_size=64,
+                concurrency=1,
+                retries=0,
+                transport=httpx.MockTransport(handler),
+            )
+        ]
+    )
+
+    assert downloaded == content
+    assert "blocked.baidupcs.com" in probes
+    assert "cdn.baidupcs.com" in probes
+    assert downloads == ["cdn.baidupcs.com"]
+
+
+def test_zip_download_selects_an_available_cdn_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes: set[str] = set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        probes.add(host)
+        if host == "cdn.baidupcs.com":
+            return httpx.Response(206, content=b"x")
+        raise httpx.ConnectTimeout("unreachable CDN", request=request)
+
+    monkeypatch.setattr(streams_module, "_cdn_preference", None)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        selected = streams_module._select_sync_download_urls(
+            client,
+            ("https://blocked.baidupcs.com/file/test?signature=secret",),
+        )
+
+    assert "blocked.baidupcs.com" in probes
+    assert "cdn.baidupcs.com" in probes
+    assert httpx.URL(selected[0]).host == "cdn.baidupcs.com"
 
 
 @pytest.mark.asyncio

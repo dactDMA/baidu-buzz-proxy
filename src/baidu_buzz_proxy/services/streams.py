@@ -6,8 +6,9 @@ import time
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
-from urllib.parse import urlsplit
+from dataclasses import dataclass, replace
+from threading import Lock
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import zipstream  # type: ignore[import-untyped]
@@ -30,6 +31,17 @@ FileStartCallback = Callable[[int, SourceFile], None]
 
 
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$", re.I)
+_BAIDU_CDN_FALLBACK_HOSTS = (
+    "cdn.baidupcs.com",
+    "nd7.baidupcs.com",
+    "bjbgp01.baidupcs.com",
+    "allall02.baidupcs.com",
+    "allall12.baidupcs.com",
+)
+_CDN_PROBE_TIMEOUT = httpx.Timeout(8, connect=5)
+_CDN_PREFERENCE_TTL_SECONDS = 300
+_cdn_preference_lock = Lock()
+_cdn_preference: tuple[str, float] | None = None
 
 
 def _segment_count(size: int, segment_size: int) -> int:
@@ -72,6 +84,141 @@ def _download_error_detail(error: Exception | None) -> str:
     return str(error)
 
 
+def _expand_baidu_cdn_urls(urls: tuple[str, ...]) -> tuple[str, ...]:
+    parsed_urls = [urlsplit(url) for url in urls]
+    baidu_urls = [
+        parsed
+        for parsed in parsed_urls
+        if (parsed.hostname or "").lower().endswith(".baidupcs.com")
+    ]
+    if not baidu_urls:
+        return urls
+    template = baidu_urls[0]
+    hosts = dict.fromkeys(
+        [
+            *((parsed.hostname or "").lower() for parsed in baidu_urls),
+            *_BAIDU_CDN_FALLBACK_HOSTS,
+        ]
+    )
+    return tuple(
+        urlunsplit((template.scheme, host, template.path, template.query, template.fragment))
+        for host in hosts
+        if host
+    )
+
+
+def _preferred_cdn_host() -> str:
+    global _cdn_preference
+    with _cdn_preference_lock:
+        if _cdn_preference is None:
+            return ""
+        host, expires_at = _cdn_preference
+        if expires_at <= time.monotonic():
+            _cdn_preference = None
+            return ""
+        return host
+
+
+def _remember_cdn_url(url: str) -> None:
+    global _cdn_preference
+    host = (urlsplit(url).hostname or "").lower()
+    if not host.endswith(".baidupcs.com"):
+        return
+    with _cdn_preference_lock:
+        _cdn_preference = (host, time.monotonic() + _CDN_PREFERENCE_TTL_SECONDS)
+
+
+def _forget_cdn_url(url: str) -> None:
+    global _cdn_preference
+    host = (urlsplit(url).hostname or "").lower()
+    with _cdn_preference_lock:
+        if _cdn_preference is not None and _cdn_preference[0] == host:
+            _cdn_preference = None
+
+
+def _prefer_cached_cdn(candidates: tuple[str, ...]) -> tuple[str, ...] | None:
+    host = _preferred_cdn_host()
+    if not host:
+        return None
+    preferred = [url for url in candidates if (urlsplit(url).hostname or "").lower() == host]
+    if not preferred:
+        return None
+    return tuple(preferred + [url for url in candidates if url not in preferred])
+
+
+async def _select_async_download_urls(
+    client: httpx.AsyncClient, urls: tuple[str, ...]
+) -> tuple[str, ...]:
+    if not any((urlsplit(url).hostname or "").endswith(".baidupcs.com") for url in urls):
+        return urls
+    candidates = _expand_baidu_cdn_urls(urls)
+    if len(candidates) <= 1:
+        return candidates
+    cached = _prefer_cached_cdn(candidates)
+    if cached is not None:
+        return cached
+
+    async def probe(index: int, url: str) -> tuple[float, int, str] | None:
+        started = time.monotonic()
+        try:
+            async with client.stream(
+                "GET",
+                url,
+                headers={"Range": "bytes=0-0"},
+                timeout=_CDN_PROBE_TIMEOUT,
+            ) as response:
+                response.raise_for_status()
+                if response.status_code not in {200, 206}:
+                    return None
+            return time.monotonic() - started, index, url
+        except httpx.HTTPError:
+            return None
+
+    results = await asyncio.gather(*(probe(index, url) for index, url in enumerate(candidates)))
+    available = sorted(result for result in results if result is not None)
+    if not available:
+        return candidates
+    preferred = [url for _, _, url in available]
+    _remember_cdn_url(preferred[0])
+    return tuple(preferred + [url for url in candidates if url not in preferred])
+
+
+def _select_sync_download_urls(client: httpx.Client, urls: tuple[str, ...]) -> tuple[str, ...]:
+    if not any((urlsplit(url).hostname or "").endswith(".baidupcs.com") for url in urls):
+        return urls
+    candidates = _expand_baidu_cdn_urls(urls)
+    if len(candidates) <= 1:
+        return candidates
+    cached = _prefer_cached_cdn(candidates)
+    if cached is not None:
+        return cached
+
+    def probe(index: int, url: str) -> tuple[float, int, str] | None:
+        started = time.monotonic()
+        try:
+            with client.stream(
+                "GET",
+                url,
+                headers={"Range": "bytes=0-0"},
+                timeout=_CDN_PROBE_TIMEOUT,
+            ) as response:
+                response.raise_for_status()
+                if response.status_code not in {200, 206}:
+                    return None
+            return time.monotonic() - started, index, url
+        except httpx.HTTPError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
+        results = list(executor.map(lambda item: probe(*item), enumerate(candidates)))
+    available = sorted(result for result in results if result is not None)
+    if not available:
+        return candidates
+    preferred = [url for _, _, url in available]
+    _remember_cdn_url(preferred[0])
+    return tuple(preferred + [url for url in candidates if url not in preferred])
+
+
 async def _download_async_segment(
     client: httpx.AsyncClient,
     source: SourceFile,
@@ -99,8 +246,10 @@ async def _download_async_segment(
                             raise SourceDownloadError("Baidu returned too much range data")
             if len(data) != expected_size:
                 raise SourceDownloadError("Baidu returned an incomplete range")
+            _remember_cdn_url(url)
             return bytes(data)
         except (httpx.HTTPError, SourceDownloadError) as error:
+            _forget_cdn_url(url)
             last_error = error
             if attempt < retries:
                 await asyncio.sleep(min(2**attempt, 10))
@@ -131,10 +280,14 @@ async def stream_baidu_file(
     async with httpx.AsyncClient(
         headers={"User-Agent": BAIDU_DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"},
         follow_redirects=True,
-        timeout=httpx.Timeout(60, read=120),
-        limits=httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency),
+        timeout=httpx.Timeout(60, connect=10, read=120),
+        limits=httpx.Limits(
+            max_connections=max(concurrency, len(_BAIDU_CDN_FALLBACK_HOSTS) + 4),
+            max_keepalive_connections=concurrency,
+        ),
         transport=transport,
     ) as client:
+        source = replace(source, urls=await _select_async_download_urls(client, source.urls))
         try:
             while next_submit < concurrency:
                 tasks[next_submit] = asyncio.create_task(
@@ -184,8 +337,10 @@ def _download_sync_segment(
                             raise SourceDownloadError("Baidu returned too much range data")
             if len(data) != expected_size:
                 raise SourceDownloadError("Baidu returned an incomplete range")
+            _remember_cdn_url(url)
             return bytes(data)
         except (httpx.HTTPError, SourceDownloadError) as error:
+            _forget_cdn_url(url)
             last_error = error
             if attempt < retries:
                 time.sleep(min(2**attempt, 10))
@@ -213,44 +368,46 @@ def _sync_file_chunks(
     concurrency = max(1, min(concurrency, count))
     futures: dict[int, Future[bytes]] = {}
     next_submit = 0
-    with (
-        httpx.Client(
-            headers={"User-Agent": BAIDU_DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"},
-            follow_redirects=True,
-            timeout=httpx.Timeout(60, read=120),
-            limits=httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency),
-            transport=transport,
-        ) as client,
-        ThreadPoolExecutor(max_workers=concurrency) as executor,
-    ):
-        while next_submit < concurrency:
-            futures[next_submit] = executor.submit(
-                _download_sync_segment,
-                client,
-                source,
-                next_submit,
-                segment_size,
-                retries,
-            )
-            next_submit += 1
-        try:
-            for next_yield in range(count):
-                data = futures.pop(next_yield).result()
-                if next_submit < count:
-                    futures[next_submit] = executor.submit(
-                        _download_sync_segment,
-                        client,
-                        source,
-                        next_submit,
-                        segment_size,
-                        retries,
-                    )
-                    next_submit += 1
-                for offset in range(0, len(data), chunk_size):
-                    yield data[offset : offset + chunk_size]
-        finally:
-            for future in futures.values():
-                future.cancel()
+    with httpx.Client(
+        headers={"User-Agent": BAIDU_DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"},
+        follow_redirects=True,
+        timeout=httpx.Timeout(60, connect=10, read=120),
+        limits=httpx.Limits(
+            max_connections=max(concurrency, len(_BAIDU_CDN_FALLBACK_HOSTS) + 4),
+            max_keepalive_connections=concurrency,
+        ),
+        transport=transport,
+    ) as client:
+        source = replace(source, urls=_select_sync_download_urls(client, source.urls))
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            while next_submit < concurrency:
+                futures[next_submit] = executor.submit(
+                    _download_sync_segment,
+                    client,
+                    source,
+                    next_submit,
+                    segment_size,
+                    retries,
+                )
+                next_submit += 1
+            try:
+                for next_yield in range(count):
+                    data = futures.pop(next_yield).result()
+                    if next_submit < count:
+                        futures[next_submit] = executor.submit(
+                            _download_sync_segment,
+                            client,
+                            source,
+                            next_submit,
+                            segment_size,
+                            retries,
+                        )
+                        next_submit += 1
+                    for offset in range(0, len(data), chunk_size):
+                        yield data[offset : offset + chunk_size]
+            finally:
+                for future in futures.values():
+                    future.cancel()
 
 
 _END = object()
