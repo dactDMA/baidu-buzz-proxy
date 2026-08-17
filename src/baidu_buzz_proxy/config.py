@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     baidu_cookies_path: Path = Path("./data/baidu/cookies")
     buzzheavier_access_token: SecretStr = SecretStr("")
     buzzheavier_base_url: str = "https://buzzheavier.com"
-    buzzheavier_part_size_mib: int = Field(default=100, ge=5, le=512)
+    buzzheavier_part_size_mib: int = Field(default=16, ge=5, le=512)
     buzzheavier_part_concurrency: int = Field(default=2, ge=1, le=8)
     buzzheavier_part_retries: int = Field(default=5, ge=0, le=10)
     admin_access_token: SecretStr = SecretStr("")

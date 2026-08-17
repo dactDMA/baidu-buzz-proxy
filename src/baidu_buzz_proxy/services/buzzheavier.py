@@ -22,6 +22,7 @@ class UploadSession:
 
 ProgressCallback = Callable[[int], Awaitable[None]]
 PartProgressCallback = Callable[[int], Awaitable[None]]
+PrepareProgressCallback = Callable[[int], Awaitable[None]]
 CancelCallback = Callable[[], Awaitable[bool]]
 
 
@@ -31,7 +32,7 @@ class BuzzMultipartClient:
         base_url: str,
         access_token: str,
         *,
-        part_size: int = 100 * 1024 * 1024,
+        part_size: int = 16 * 1024 * 1024,
         concurrency: int = 2,
         retries: int = 5,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -68,6 +69,7 @@ class BuzzMultipartClient:
         stream: AsyncIterator[bytes],
         *,
         progress: ProgressCallback,
+        prepare_progress: PrepareProgressCallback | None = None,
         is_cancelled: CancelCallback,
     ) -> str:
         session = await self.create_upload(name)
@@ -97,7 +99,7 @@ class BuzzMultipartClient:
                 await progress(confirmed + sum(part_progress.values()))
 
         try:
-            async for part in self._parts(stream):
+            async for part in self._parts(stream, prepare_progress=prepare_progress):
                 if await is_cancelled():
                     raise asyncio.CancelledError
                 while len(inflight) >= self.concurrency:
@@ -190,13 +192,23 @@ class BuzzMultipartClient:
             sent += len(chunk)
             await progress(sent)
 
-    async def _parts(self, stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    async def _parts(
+        self,
+        stream: AsyncIterator[bytes],
+        *,
+        prepare_progress: PrepareProgressCallback | None = None,
+    ) -> AsyncIterator[bytes]:
         buffer = bytearray()
+        preparing_first_part = True
         async for chunk in stream:
             buffer.extend(chunk)
+            if preparing_first_part and prepare_progress:
+                await prepare_progress(min(len(buffer), self.part_size))
             while len(buffer) >= self.part_size:
-                yield bytes(buffer[: self.part_size])
+                part = bytes(buffer[: self.part_size])
                 del buffer[: self.part_size]
+                preparing_first_part = False
+                yield part
         if buffer:
             yield bytes(buffer)
 

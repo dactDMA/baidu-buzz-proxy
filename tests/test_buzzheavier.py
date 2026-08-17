@@ -31,9 +31,13 @@ async def test_multipart_upload_splits_and_completes() -> None:
         yield b"ijklmnop"
 
     progress: list[int] = []
+    preparation: list[int] = []
 
     async def record_progress(value: int) -> None:
         progress.append(value)
+
+    async def record_preparation(value: int) -> None:
+        preparation.append(value)
 
     client = BuzzMultipartClient(
         "https://buzz.test",
@@ -47,6 +51,7 @@ async def test_multipart_upload_splits_and_completes() -> None:
             "sample.bin",
             content(),
             progress=record_progress,
+            prepare_progress=record_preparation,
             is_cancelled=_not_cancelled,
         )
     finally:
@@ -60,6 +65,7 @@ async def test_multipart_upload_splits_and_completes() -> None:
         (4, b"p"),
     ]
     assert progress[-1] == 16
+    assert preparation == [5]
 
 
 @pytest.mark.asyncio
