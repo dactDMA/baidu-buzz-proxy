@@ -60,7 +60,7 @@ def index_html(turnstile_site_key: str) -> str:
 <input id="code" type="text" maxlength="16" placeholder="Optional when included in the URL">{turnstile}
 <p><button id="submit" type="submit">Import share</button></p><p id="error" class="error"></p></form>
 <p class="muted">The service first imports the public share into an isolated temporary folder, then lets you choose files. Source data is streamed to Buzzheavier and removed from temporary Baidu storage afterwards.</p>
-<footer><a href="/docs">API documentation</a> · Open source under MIT</footer></main>
+<footer><a href="/docs">API documentation</a> · <a href="https://github.com/dactDMA/baidu-buzz-proxy" target="_blank" rel="noopener noreferrer">Open source under MIT</a></footer></main>
 <script>
 const form=document.getElementById('create'),error=document.getElementById('error'),submit=document.getElementById('submit');
 form.addEventListener('submit',async event=>{{event.preventDefault();error.textContent='';submit.disabled=true;
