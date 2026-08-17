@@ -219,6 +219,7 @@ async def test_baidu_redirect_stays_on_the_selected_https_cdn(
 ) -> None:
     content = b"sticky HTTPS redirect"
     redirected_hosts: list[str] = []
+    redirected_authorities: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         host = request.url.host
@@ -230,6 +231,9 @@ async def test_baidu_redirect_stays_on_the_selected_https_cdn(
                 headers={"Location": "https://bjbgp01.baidupcs.com/file/redirected?token=fresh"},
             )
         redirected_hosts.append(host)
+        redirected_authorities.append(request.headers["Host"])
+        if request.headers["Host"] != "bjbgp01.baidupcs.com":
+            return httpx.Response(403)
         if request.headers.get("Range") == "bytes=0-0":
             return httpx.Response(206, content=content[:1])
         return httpx.Response(200, content=content)
@@ -257,6 +261,7 @@ async def test_baidu_redirect_stays_on_the_selected_https_cdn(
     assert downloaded == content
     assert redirected_hosts
     assert set(redirected_hosts) == {"nd7.baidupcs.com"}
+    assert set(redirected_authorities) == {"bjbgp01.baidupcs.com"}
 
 
 @pytest.mark.asyncio
@@ -265,6 +270,7 @@ async def test_zip_redirect_stays_on_the_selected_https_cdn(
 ) -> None:
     content = b"sticky HTTPS ZIP redirect"
     redirected_hosts: list[str] = []
+    redirected_authorities: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         host = request.url.host
@@ -276,6 +282,9 @@ async def test_zip_redirect_stays_on_the_selected_https_cdn(
                 headers={"Location": "https://allall02.baidupcs.com/file/redirected"},
             )
         redirected_hosts.append(host)
+        redirected_authorities.append(request.headers["Host"])
+        if request.headers["Host"] != "allall02.baidupcs.com":
+            return httpx.Response(403)
         if request.headers.get("Range"):
             return range_response(request, content)
         return httpx.Response(200, content=content)
@@ -303,6 +312,7 @@ async def test_zip_redirect_stays_on_the_selected_https_cdn(
         assert archive.read("folder/small.bin") == content
     assert redirected_hosts
     assert set(redirected_hosts) == {"nd7.baidupcs.com"}
+    assert set(redirected_authorities) == {"allall02.baidupcs.com"}
 
 
 @pytest.mark.asyncio

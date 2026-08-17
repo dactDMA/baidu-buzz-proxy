@@ -27,6 +27,13 @@ class SourceFile:
     urls: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _CdnRequest:
+    url: str
+    logical_url: str
+    authority: str | None = None
+
+
 FileStartCallback = Callable[[int, SourceFile], None]
 RouteStatusCallback = Callable[[str], None]
 
@@ -86,14 +93,27 @@ def _download_error_detail(error: Exception | None) -> str:
     return str(error)
 
 
-def _pinned_https_redirect_url(source_url: str, location: str) -> str:
-    source = urlsplit(source_url)
-    target = urlsplit(urljoin(source_url, location))
+def _cdn_request_headers(request: _CdnRequest, headers: dict[str, str]) -> dict[str, str]:
+    if request.authority is None:
+        return headers
+    return {**headers, "Host": request.authority}
+
+
+def _follow_pinned_https_redirect(request: _CdnRequest, location: str) -> _CdnRequest:
+    source = urlsplit(request.url)
+    target = urlsplit(urljoin(request.logical_url, location))
     source_host = (source.hostname or "").lower()
     target_host = (target.hostname or "").lower()
     if not source_host.endswith(".baidupcs.com") or not target_host.endswith(".baidupcs.com"):
         raise SourceDownloadError("Baidu redirected outside its HTTPS CDN")
-    return urlunsplit(("https", source_host, target.path, target.query, target.fragment))
+    if target.port not in {None, 443}:
+        raise SourceDownloadError("Baidu redirected to an unsupported HTTPS CDN port")
+    authority = target_host if target.port is None else f"{target_host}:{target.port}"
+    return _CdnRequest(
+        url=urlunsplit(("https", source_host, target.path, target.query, target.fragment)),
+        logical_url=urlunsplit(("https", authority, target.path, target.query, target.fragment)),
+        authority=authority,
+    )
 
 
 def _expand_baidu_cdn_urls(urls: tuple[str, ...]) -> tuple[str, ...]:
@@ -179,17 +199,17 @@ async def _select_async_download_urls(
     async def probe(index: int, url: str) -> tuple[float, int, str] | None:
         started = time.monotonic()
         try:
-            request_url = url
+            request = _CdnRequest(url=url, logical_url=url)
             for _ in range(_MAX_CDN_REDIRECTS + 1):
                 async with client.stream(
                     "GET",
-                    request_url,
-                    headers={"Range": "bytes=0-0"},
+                    request.url,
+                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}),
                     timeout=_CDN_PROBE_TIMEOUT,
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
-                        request_url = _pinned_https_redirect_url(
-                            request_url, response.headers["Location"]
+                        request = _follow_pinned_https_redirect(
+                            request, response.headers["Location"]
                         )
                         continue
                     response.raise_for_status()
@@ -234,17 +254,17 @@ def _select_sync_download_urls(
     def probe(index: int, url: str) -> tuple[float, int, str] | None:
         started = time.monotonic()
         try:
-            request_url = url
+            request = _CdnRequest(url=url, logical_url=url)
             for _ in range(_MAX_CDN_REDIRECTS + 1):
                 with client.stream(
                     "GET",
-                    request_url,
-                    headers={"Range": "bytes=0-0"},
+                    request.url,
+                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}),
                     timeout=_CDN_PROBE_TIMEOUT,
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
-                        request_url = _pinned_https_redirect_url(
-                            request_url, response.headers["Location"]
+                        request = _follow_pinned_https_redirect(
+                            request, response.headers["Location"]
                         )
                         continue
                     response.raise_for_status()
@@ -289,16 +309,18 @@ async def _download_async_segment(
             )
         try:
             data = bytearray()
-            request_url = url
+            request = _CdnRequest(url=url, logical_url=url)
             for _ in range(_MAX_CDN_REDIRECTS + 1):
                 async with client.stream(
                     "GET",
-                    request_url,
-                    headers=_download_headers(start, end, source.size_bytes),
+                    request.url,
+                    headers=_cdn_request_headers(
+                        request, _download_headers(start, end, source.size_bytes)
+                    ),
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
-                        request_url = _pinned_https_redirect_url(
-                            request_url, response.headers["Location"]
+                        request = _follow_pinned_https_redirect(
+                            request, response.headers["Location"]
                         )
                         continue
                     _validate_range_response(response, start, end, source.size_bytes)
@@ -416,16 +438,18 @@ def _download_sync_segment(
             )
         try:
             data = bytearray()
-            request_url = url
+            request = _CdnRequest(url=url, logical_url=url)
             for _ in range(_MAX_CDN_REDIRECTS + 1):
                 with client.stream(
                     "GET",
-                    request_url,
-                    headers=_download_headers(start, end, source.size_bytes),
+                    request.url,
+                    headers=_cdn_request_headers(
+                        request, _download_headers(start, end, source.size_bytes)
+                    ),
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
-                        request_url = _pinned_https_redirect_url(
-                            request_url, response.headers["Location"]
+                        request = _follow_pinned_https_redirect(
+                            request, response.headers["Location"]
                         )
                         continue
                     _validate_range_response(response, start, end, source.size_bytes)
