@@ -42,11 +42,16 @@ class BaiduPCSClient:
     ) -> None:
         self.credentials = credentials
         self.uid = credentials.uid
-        self.client = httpx.AsyncClient(
-            cookies=credentials.cookies,
+        self._timeout = httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 30))
+        self._transport = transport
+        self.client = self._new_http_client(credentials.cookies)
+
+    def _new_http_client(self, cookies: dict[str, str]) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            cookies=cookies,
             follow_redirects=True,
-            timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 30)),
-            transport=transport,
+            timeout=self._timeout,
+            transport=self._transport,
         )
 
     async def close(self) -> None:
@@ -212,7 +217,23 @@ class BaiduPCSClient:
     ) -> None:
         feature, query_code = self._share_feature(share_url)
         code = extraction_code.strip() or query_code
-        state = await self._access_share_page(feature, first=True)
+        base_cookies = {
+            name: value
+            for name, value in self.credentials.cookies.items()
+            if name.upper() != "BDCLND"
+        }
+        async with self._new_http_client(base_cookies) as share_client:
+            await self._import_share_in_session(share_client, feature, share_url, destination, code)
+
+    async def _import_share_in_session(
+        self,
+        share_client: httpx.AsyncClient,
+        feature: str,
+        share_url: str,
+        destination: str,
+        code: str,
+    ) -> None:
+        state = await self._access_share_page(feature, first=True, client=share_client)
         if code:
             verify_payload = await self._request_json(
                 "POST",
@@ -232,10 +253,11 @@ class BaiduPCSClient:
                 },
                 headers={"Referer": share_url, "User-Agent": _BROWSER_USER_AGENT},
                 error_key="errno",
+                client=share_client,
             )
             if not verify_payload.get("randsk"):
                 raise BaiduPCSClientError("verify share", "Baidu did not return randsk")
-            state = await self._access_share_page(feature, first=False)
+            state = await self._access_share_page(feature, first=False, client=share_client)
 
         list_payload = await self._request_json(
             "GET",
@@ -254,6 +276,7 @@ class BaiduPCSClient:
                 "User-Agent": _BROWSER_USER_AGENT,
             },
             error_key="errno",
+            client=share_client,
         )
         items = list_payload.get("list", [])
         fs_ids = [
@@ -282,6 +305,7 @@ class BaiduPCSClient:
                 "Content-Type": "application/x-www-form-urlencoded",
             },
             error_key="errno",
+            client=share_client,
         )
 
     async def _get_uid(self) -> int:
@@ -299,14 +323,20 @@ class BaiduPCSClient:
         self.uid = int(records[0]["uk"])
         return self.uid
 
-    async def _access_share_page(self, feature: str, *, first: bool) -> dict[str, Any]:
+    async def _access_share_page(
+        self,
+        feature: str,
+        *,
+        first: bool,
+        client: httpx.AsyncClient | None = None,
+    ) -> dict[str, Any]:
         referer = (
             "https://pan.baidu.com/disk/home"
             if first
             else f"https://pan.baidu.com/share/init?surl={feature[1:]}"
         )
         try:
-            response = await self.client.get(
+            response = await (client or self.client).get(
                 f"https://pan.baidu.com/s/{feature}",
                 headers={"Referer": referer, "User-Agent": _BROWSER_USER_AGENT},
             )
@@ -359,10 +389,11 @@ class BaiduPCSClient:
         *,
         operation: str,
         error_key: str = "error_code",
+        client: httpx.AsyncClient | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         try:
-            response = await self.client.request(method, url, **kwargs)
+            response = await (client or self.client).request(method, url, **kwargs)
         except httpx.HTTPError as error:
             raise BaiduPCSNetworkError(operation, str(error)) from error
         try:
