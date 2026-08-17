@@ -1,4 +1,11 @@
-from baidu_buzz_proxy.web import job_html
+from baidu_buzz_proxy.web import index_html, job_html
+
+
+def test_homepage_links_to_the_source_repository() -> None:
+    page = index_html("")
+
+    assert 'href="https://github.com/dactDMA/baidu-buzz-proxy"' in page
+    assert ">Open source under MIT</a>" in page
 
 
 def test_job_page_has_live_progress_feedback() -> None:
