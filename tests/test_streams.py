@@ -90,6 +90,62 @@ async def test_parallel_range_rejects_ignored_range() -> None:
 
 
 @pytest.mark.asyncio
+async def test_single_segment_uses_plain_get() -> None:
+    content = b"small file"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "Range" not in request.headers
+        return httpx.Response(200, content=content)
+
+    source = SourceFile("small.bin", len(content), ("https://source.test/file",))
+    downloaded = b"".join(
+        [
+            chunk
+            async for chunk in stream_baidu_file(
+                source,
+                chunk_size=4,
+                segment_size=16,
+                concurrency=1,
+                retries=0,
+                transport=httpx.MockTransport(handler),
+            )
+        ]
+    )
+
+    assert downloaded == content
+
+
+@pytest.mark.asyncio
+async def test_download_failure_exposes_safe_http_status() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    source = SourceFile(
+        "small.bin",
+        4,
+        ("https://source.test/file?secret=signed-value",),
+    )
+    with pytest.raises(SourceDownloadError) as raised:
+        _ = b"".join(
+            [
+                chunk
+                async for chunk in stream_baidu_file(
+                    source,
+                    chunk_size=4,
+                    segment_size=16,
+                    concurrency=1,
+                    retries=0,
+                    transport=httpx.MockTransport(handler),
+                )
+            ]
+        )
+
+    message = str(raised.value)
+    assert "HTTP 403 from source.test" in message
+    assert "signed-value" not in message
+
+
+@pytest.mark.asyncio
 async def test_failed_range_retries_with_another_source_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

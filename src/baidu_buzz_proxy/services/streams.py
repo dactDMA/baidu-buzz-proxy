@@ -7,6 +7,7 @@ import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 import zipstream  # type: ignore[import-untyped]
@@ -53,6 +54,24 @@ def _validate_range_response(
         raise SourceDownloadError("Baidu returned an invalid Content-Range")
 
 
+def _download_headers(start: int, end: int, total_size: int) -> dict[str, str]:
+    if start == 0 and end == total_size - 1:
+        return {}
+    return {"Range": f"bytes={start}-{end}"}
+
+
+def _download_error_detail(error: Exception | None) -> str:
+    if error is None:
+        return "unknown download error"
+    if isinstance(error, httpx.HTTPStatusError):
+        host = urlsplit(str(error.request.url)).hostname or "Baidu CDN"
+        return f"HTTP {error.response.status_code} from {host}"
+    if isinstance(error, httpx.RequestError):
+        host = urlsplit(str(error.request.url)).hostname or "Baidu CDN"
+        return f"{type(error).__name__} while contacting {host}"
+    return str(error)
+
+
 async def _download_async_segment(
     client: httpx.AsyncClient,
     source: SourceFile,
@@ -67,7 +86,7 @@ async def _download_async_segment(
         url = source.urls[attempt % len(source.urls)]
         try:
             async with client.stream(
-                "GET", url, headers={"Range": f"bytes={start}-{end}"}
+                "GET", url, headers=_download_headers(start, end, source.size_bytes)
             ) as response:
                 _validate_range_response(response, start, end, source.size_bytes)
                 data = bytearray()
@@ -86,7 +105,8 @@ async def _download_async_segment(
             if attempt < retries:
                 await asyncio.sleep(min(2**attempt, 10))
     raise SourceDownloadError(
-        f"Baidu range {start}-{end} failed after {retries + 1} attempts"
+        f"Baidu download {start}-{end} failed after {retries + 1} attempts: "
+        f"{_download_error_detail(last_error)}"
     ) from last_error
 
 
@@ -150,7 +170,9 @@ def _download_sync_segment(
     for attempt in range(retries + 1):
         url = source.urls[attempt % len(source.urls)]
         try:
-            with client.stream("GET", url, headers={"Range": f"bytes={start}-{end}"}) as response:
+            with client.stream(
+                "GET", url, headers=_download_headers(start, end, source.size_bytes)
+            ) as response:
                 _validate_range_response(response, start, end, source.size_bytes)
                 data = bytearray()
                 if response.is_stream_consumed:
@@ -168,7 +190,8 @@ def _download_sync_segment(
             if attempt < retries:
                 time.sleep(min(2**attempt, 10))
     raise SourceDownloadError(
-        f"Baidu range {start}-{end} failed after {retries + 1} attempts"
+        f"Baidu download {start}-{end} failed after {retries + 1} attempts: "
+        f"{_download_error_detail(last_error)}"
     ) from last_error
 
 
