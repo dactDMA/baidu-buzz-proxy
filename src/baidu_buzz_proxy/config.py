@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
     redis_url: str = "redis://localhost:6379/0"
-    baidu_pcs_go_path: Path = Path("./bin/BaiduPCS-Go")
+    baidu_pcs_config_path: Path = Path("./data/baidu/pcs_config.json")
+    baidu_cookies_path: Path = Path("./data/baidu/cookies")
     buzzheavier_access_token: SecretStr = SecretStr("")
     buzzheavier_base_url: str = "https://buzzheavier.com"
     buzzheavier_part_size_mib: int = Field(default=100, ge=5, le=512)
@@ -32,7 +33,7 @@ class Settings(BaseSettings):
     baidu_download_concurrency: int = Field(default=10, ge=1, le=20)
     baidu_range_size_mib: int = Field(default=16, ge=4, le=128)
     baidu_download_retries: int = Field(default=5, ge=0, le=10)
-    max_active_jobs: int = Field(default=2, ge=1, le=32)
+    max_active_jobs: int = Field(default=4, ge=1, le=32)
     max_pending_jobs: int = Field(default=100, ge=1, le=10000)
     job_page_ttl_days: int = Field(default=8, ge=1, le=365)
     failed_job_ttl_hours: int = Field(default=24, ge=1, le=168)

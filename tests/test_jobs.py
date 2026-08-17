@@ -22,16 +22,16 @@ class FakeBaidu:
         self.removed: list[str] = []
         self.deleted: list[str] = []
 
+    async def close(self) -> None:
+        pass
+
     async def quota(self) -> QuotaSnapshot:
         return QuotaSnapshot(total_bytes=5 * 1024**4, used_bytes=1024**4)
 
-    async def mkdir(self, remote_path: str) -> None:
-        pass
+    async def mkdir(self, remote_path: str) -> str | None:
+        return "folder-1" if remote_path.startswith("/ProxyJobs/") else None
 
-    async def change_directory(self, remote_path: str) -> None:
-        pass
-
-    async def import_share(self, share_url: str, extraction_code: str) -> None:
+    async def import_share(self, share_url: str, extraction_code: str, destination: str) -> None:
         pass
 
     async def list_directory(self, directory: str, root: str) -> list[BaiduItem]:
@@ -55,16 +55,25 @@ class FakeBaidu:
             )
         ]
 
-    async def metadata_many(self, remote_paths: list[str], progress: Any = None) -> list[Any]:
-        if progress:
-            await progress(0, len(remote_paths), remote_paths[0])
-        return [("file-1", 100) for _ in remote_paths]
-
     async def metadata_fs_id(self, remote_path: str) -> str:
         return "folder-1"
 
     async def locate(self, remote_path: str) -> list[str]:
         return ["https://source.test/base.rar"]
+
+    async def locate_many(
+        self,
+        remote_paths: list[str],
+        *,
+        concurrency: int,
+        progress: Any = None,
+    ) -> list[list[str]]:
+        result = []
+        for index, remote_path in enumerate(remote_paths, start=1):
+            if progress:
+                await progress(index, len(remote_paths), remote_path)
+            result.append(await self.locate(remote_path))
+        return result
 
     async def remove(self, remote_path: str) -> None:
         self.removed.append(remote_path)
@@ -87,15 +96,31 @@ class FlakyImportBaidu(FakeBaidu):
         super().__init__()
         self.import_calls = 0
 
-    async def import_share(self, share_url: str, extraction_code: str) -> None:
+    async def import_share(self, share_url: str, extraction_code: str, destination: str) -> None:
         self.import_calls += 1
         if self.import_calls == 1:
-            raise BaiduError("分享链接转存到网盘失败: 返回json解析错误")
+            raise BaiduError("access share", "Baidu returned invalid JSON")
 
     async def list_directory(self, directory: str, root: str) -> list[BaiduItem]:
         if self.import_calls == 1:
             return []
         return await super().list_directory(directory, root)
+
+
+class BlockingQuotaBaidu(FakeBaidu):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quota_started = asyncio.Event()
+        self.quota_cancelled = asyncio.Event()
+
+    async def quota(self) -> QuotaSnapshot:
+        self.quota_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.quota_cancelled.set()
+            raise
+        raise AssertionError("unreachable")
 
 
 def test_safe_output_name_keeps_unicode_and_removes_path_characters() -> None:
@@ -107,8 +132,12 @@ def test_safe_output_name_sanitizes_the_automatic_fallback() -> None:
 
 
 def test_only_temporary_baidu_import_errors_are_retried() -> None:
-    assert jobs_module.is_retryable_import_error(BaiduError("返回json解析错误"))
-    assert not jobs_module.is_retryable_import_error(BaiduError("提取码错误"))
+    assert jobs_module.is_retryable_import_error(
+        BaiduError("access share", "Baidu returned invalid JSON")
+    )
+    assert not jobs_module.is_retryable_import_error(
+        BaiduError("verify share", "The extraction code is incorrect")
+    )
 
 
 @pytest.mark.asyncio
@@ -222,6 +251,30 @@ async def test_import_retries_a_temporary_baidu_json_error(
         assert baidu.import_calls == 2
         assert imported.status_message == "Choose files or folders to transfer"
         assert len(imported.items) == 1
+    finally:
+        await service.stop()
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_an_active_job_immediately(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cancel.db'}")
+    await database.initialize()
+    baidu = BlockingQuotaBaidu()
+    service = JobService(database, Settings(max_active_jobs=1), baidu, FakeBuzz())  # type: ignore[arg-type]
+    await service.start()
+    try:
+        created, creator_key = await service.create_job("https://pan.baidu.com/s/test", "abcd")
+        await asyncio.wait_for(baidu.quota_started.wait(), timeout=1)
+
+        cancelled = await service.cancel(created.public_id, creator_key, is_admin=False)
+
+        assert cancelled.state == JobState.CANCELLED
+        assert cancelled.status_message == "Job cancelled"
+        await asyncio.wait_for(baidu.quota_cancelled.wait(), timeout=1)
+        stored = await service.get_job(created.public_id)
+        assert stored.state == JobState.CANCELLED
+        assert not stored.error_message
     finally:
         await service.stop()
         await database.close()
