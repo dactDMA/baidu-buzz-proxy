@@ -68,7 +68,11 @@ class FakeBuzz:
 
 
 def test_safe_output_name_keeps_unicode_and_removes_path_characters() -> None:
-    assert safe_output_name("资料/base?.zip", "fallback.zip") == "资料_base?.zip"
+    assert safe_output_name("资料/base?#.zip", "fallback.zip") == "资料_base?_.zip"
+
+
+def test_safe_output_name_sanitizes_the_automatic_fallback() -> None:
+    assert safe_output_name("", "Lovely#remake.zip") == "Lovely_remake.zip"
 
 
 @pytest.mark.asyncio
