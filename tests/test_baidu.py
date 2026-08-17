@@ -4,6 +4,7 @@ from baidu_buzz_proxy.services.baidu import (
     BaiduError,
     parse_detailed_listing,
     parse_metadata,
+    parse_metadata_batch,
     parse_size,
 )
 
@@ -112,3 +113,21 @@ def test_parse_aligned_directory_metadata() -> None:
 """
 
     assert parse_metadata(output) == ("101372410808157", 0)
+
+
+def test_parse_metadata_batch_preserves_command_order() -> None:
+    output = """
+[0] - [/first.bin] --------------
+
+  类型              文件
+  文件大小          100, 100B
+  fs_id             111
+
+[1] - [/second.bin] --------------
+
+  类型              文件
+  文件大小          250, 250B
+  fs_id             222
+"""
+
+    assert parse_metadata_batch(output) == [("111", 100), ("222", 250)]

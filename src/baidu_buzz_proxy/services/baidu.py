@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -41,6 +42,7 @@ _ALIGNED_LISTING_ROW_RE = re.compile(
     rf"(?:(?P<md5>{_MD5_PATTERN})\s+)?(?P<name>.+?)\s*$",
     re.I | re.M,
 )
+_METADATA_SECTION_RE = re.compile(r"^\[\d+\]\s*-\s*\[.*?\]\s*-+\s*$", re.M)
 _SIZE_FACTORS = {
     "B": 1,
     "KB": 1024,
@@ -149,6 +151,22 @@ def parse_metadata(output: str) -> tuple[str, int]:
     return fs_id, size
 
 
+def parse_metadata_batch(output: str) -> list[tuple[str, int]]:
+    clean = _ANSI_RE.sub("", output)
+    headers = list(_METADATA_SECTION_RE.finditer(clean))
+    if not headers:
+        return [parse_metadata(clean)]
+    result: list[tuple[str, int]] = []
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(clean)
+        result.append(parse_metadata(clean[header.end() : end]))
+    return result
+
+
+ScanProgressCallback = Callable[[str, int, int], Awaitable[None]]
+MetadataProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
+
 class BaiduPCSClient:
     def __init__(self, binary: Path, timeout_seconds: int = 3600) -> None:
         self.binary = binary
@@ -212,29 +230,18 @@ class BaiduPCSClient:
         result = await self.run("ls", "-l", directory, timeout=120)
         return parse_detailed_listing(result.stdout, directory, root)
 
-    async def list_tree(self, root: str) -> list[BaiduItem]:
+    async def list_tree(
+        self, root: str, progress: ScanProgressCallback | None = None
+    ) -> list[BaiduItem]:
         pending = [root]
         result: list[BaiduItem] = []
+        directories_scanned = 0
         while pending:
             directory = pending.pop()
+            if progress:
+                await progress(directory, directories_scanned, len(result))
             children = await self.list_directory(directory, root)
-            exact_children: list[BaiduItem] = []
-            for child in children:
-                if child.is_dir:
-                    exact_children.append(child)
-                    continue
-                fs_id, exact_size = await self.metadata(child.remote_path)
-                exact_children.append(
-                    BaiduItem(
-                        fs_id=fs_id,
-                        remote_path=child.remote_path,
-                        relative_path=child.relative_path,
-                        name=child.name,
-                        is_dir=False,
-                        size_bytes=exact_size,
-                    )
-                )
-            children = exact_children
+            directories_scanned += 1
             result.extend(children)
             pending.extend(item.remote_path for item in children if item.is_dir)
         return result
@@ -244,8 +251,33 @@ class BaiduPCSClient:
         return fs_id
 
     async def metadata(self, remote_path: str) -> tuple[str, int]:
-        result = await self.run("meta", remote_path, timeout=60)
-        return parse_metadata(result.stdout)
+        return (await self.metadata_many([remote_path], batch_size=1))[0]
+
+    async def metadata_many(
+        self,
+        remote_paths: list[str],
+        *,
+        batch_size: int = 20,
+        progress: MetadataProgressCallback | None = None,
+    ) -> list[tuple[str, int]]:
+        result: list[tuple[str, int]] = []
+        total = len(remote_paths)
+        for offset in range(0, total, batch_size):
+            batch = remote_paths[offset : offset + batch_size]
+            if progress:
+                await progress(offset, min(offset + len(batch), total), batch[0])
+            command = await self.run(
+                "meta",
+                *batch,
+                timeout=min(self.timeout_seconds, max(120, len(batch) * 30)),
+            )
+            parsed = parse_metadata_batch(command.stdout)
+            if len(parsed) != len(batch):
+                raise BaiduError(
+                    f"BaiduPCS-Go returned metadata for {len(parsed)} of {len(batch)} files"
+                )
+            result.extend(parsed)
+        return result
 
     async def locate(self, remote_path: str) -> list[str]:
         result = await self.run("locate", remote_path, timeout=120)

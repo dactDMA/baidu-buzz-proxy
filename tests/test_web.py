@@ -16,6 +16,8 @@ def test_job_page_has_live_progress_feedback() -> None:
     assert "Current step:" in page
     assert "progress-slide" in page
     assert "MiB/s" in page
+    assert "Streaming file " in page
+    assert "Exact sizes are read in batches" in page
     assert "setTimeout(refresh,1000)" in page
     assert 'id="donation" class="panel donation" hidden' in page
     assert "About $20 per month keeps the server online" in page
