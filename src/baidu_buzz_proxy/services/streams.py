@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from threading import Lock
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 import zipstream  # type: ignore[import-untyped]
@@ -28,6 +28,7 @@ class SourceFile:
 
 
 FileStartCallback = Callable[[int, SourceFile], None]
+RouteStatusCallback = Callable[[str], None]
 
 
 _CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$", re.I)
@@ -40,6 +41,7 @@ _BAIDU_CDN_FALLBACK_HOSTS = (
 )
 _CDN_PROBE_TIMEOUT = httpx.Timeout(8, connect=5)
 _CDN_PREFERENCE_TTL_SECONDS = 300
+_MAX_CDN_REDIRECTS = 5
 _cdn_preference_lock = Lock()
 _cdn_preference: tuple[str, float] | None = None
 
@@ -82,6 +84,16 @@ def _download_error_detail(error: Exception | None) -> str:
         host = urlsplit(str(error.request.url)).hostname or "Baidu CDN"
         return f"{type(error).__name__} while contacting {host}"
     return str(error)
+
+
+def _pinned_https_redirect_url(source_url: str, location: str) -> str:
+    source = urlsplit(source_url)
+    target = urlsplit(urljoin(source_url, location))
+    source_host = (source.hostname or "").lower()
+    target_host = (target.hostname or "").lower()
+    if not source_host.endswith(".baidupcs.com") or not target_host.endswith(".baidupcs.com"):
+        raise SourceDownloadError("Baidu redirected outside its HTTPS CDN")
+    return urlunsplit(("https", source_host, target.path, target.query, target.fragment))
 
 
 def _expand_baidu_cdn_urls(urls: tuple[str, ...]) -> tuple[str, ...]:
@@ -147,7 +159,9 @@ def _prefer_cached_cdn(candidates: tuple[str, ...]) -> tuple[str, ...] | None:
 
 
 async def _select_async_download_urls(
-    client: httpx.AsyncClient, urls: tuple[str, ...]
+    client: httpx.AsyncClient,
+    urls: tuple[str, ...],
+    status: RouteStatusCallback | None = None,
 ) -> tuple[str, ...]:
     if not any((urlsplit(url).hostname or "").endswith(".baidupcs.com") for url in urls):
         return urls
@@ -156,34 +170,54 @@ async def _select_async_download_urls(
         return candidates
     cached = _prefer_cached_cdn(candidates)
     if cached is not None:
+        if status:
+            status(f"Using cached HTTPS Baidu CDN: {urlsplit(cached[0]).hostname}")
         return cached
+    if status:
+        status(f"Checking {len(candidates)} HTTPS Baidu CDN routes")
 
     async def probe(index: int, url: str) -> tuple[float, int, str] | None:
         started = time.monotonic()
         try:
-            async with client.stream(
-                "GET",
-                url,
-                headers={"Range": "bytes=0-0"},
-                timeout=_CDN_PROBE_TIMEOUT,
-            ) as response:
-                response.raise_for_status()
-                if response.status_code not in {200, 206}:
-                    return None
-            return time.monotonic() - started, index, url
-        except httpx.HTTPError:
+            request_url = url
+            for _ in range(_MAX_CDN_REDIRECTS + 1):
+                async with client.stream(
+                    "GET",
+                    request_url,
+                    headers={"Range": "bytes=0-0"},
+                    timeout=_CDN_PROBE_TIMEOUT,
+                ) as response:
+                    if response.is_redirect and response.headers.get("Location"):
+                        request_url = _pinned_https_redirect_url(
+                            request_url, response.headers["Location"]
+                        )
+                        continue
+                    response.raise_for_status()
+                    if response.status_code not in {200, 206}:
+                        return None
+                    return time.monotonic() - started, index, url
+            return None
+        except (httpx.HTTPError, SourceDownloadError):
             return None
 
     results = await asyncio.gather(*(probe(index, url) for index, url in enumerate(candidates)))
     available = sorted(result for result in results if result is not None)
     if not available:
+        if status:
+            status("No HTTPS Baidu CDN passed the probe; retrying each route")
         return candidates
     preferred = [url for _, _, url in available]
     _remember_cdn_url(preferred[0])
+    if status:
+        status(f"Selected HTTPS Baidu CDN: {urlsplit(preferred[0]).hostname}")
     return tuple(preferred + [url for url in candidates if url not in preferred])
 
 
-def _select_sync_download_urls(client: httpx.Client, urls: tuple[str, ...]) -> tuple[str, ...]:
+def _select_sync_download_urls(
+    client: httpx.Client,
+    urls: tuple[str, ...],
+    status: RouteStatusCallback | None = None,
+) -> tuple[str, ...]:
     if not any((urlsplit(url).hostname or "").endswith(".baidupcs.com") for url in urls):
         return urls
     candidates = _expand_baidu_cdn_urls(urls)
@@ -191,31 +225,47 @@ def _select_sync_download_urls(client: httpx.Client, urls: tuple[str, ...]) -> t
         return candidates
     cached = _prefer_cached_cdn(candidates)
     if cached is not None:
+        if status:
+            status(f"Using cached HTTPS Baidu CDN: {urlsplit(cached[0]).hostname}")
         return cached
+    if status:
+        status(f"Checking {len(candidates)} HTTPS Baidu CDN routes")
 
     def probe(index: int, url: str) -> tuple[float, int, str] | None:
         started = time.monotonic()
         try:
-            with client.stream(
-                "GET",
-                url,
-                headers={"Range": "bytes=0-0"},
-                timeout=_CDN_PROBE_TIMEOUT,
-            ) as response:
-                response.raise_for_status()
-                if response.status_code not in {200, 206}:
-                    return None
-            return time.monotonic() - started, index, url
-        except httpx.HTTPError:
+            request_url = url
+            for _ in range(_MAX_CDN_REDIRECTS + 1):
+                with client.stream(
+                    "GET",
+                    request_url,
+                    headers={"Range": "bytes=0-0"},
+                    timeout=_CDN_PROBE_TIMEOUT,
+                ) as response:
+                    if response.is_redirect and response.headers.get("Location"):
+                        request_url = _pinned_https_redirect_url(
+                            request_url, response.headers["Location"]
+                        )
+                        continue
+                    response.raise_for_status()
+                    if response.status_code not in {200, 206}:
+                        return None
+                    return time.monotonic() - started, index, url
+            return None
+        except (httpx.HTTPError, SourceDownloadError):
             return None
 
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
         results = list(executor.map(lambda item: probe(*item), enumerate(candidates)))
     available = sorted(result for result in results if result is not None)
     if not available:
+        if status:
+            status("No HTTPS Baidu CDN passed the probe; retrying each route")
         return candidates
     preferred = [url for _, _, url in available]
     _remember_cdn_url(preferred[0])
+    if status:
+        status(f"Selected HTTPS Baidu CDN: {urlsplit(preferred[0]).hostname}")
     return tuple(preferred + [url for url in candidates if url not in preferred])
 
 
@@ -225,25 +275,43 @@ async def _download_async_segment(
     index: int,
     segment_size: int,
     retries: int,
+    route_status: RouteStatusCallback | None = None,
 ) -> bytes:
     start, end = _segment_bounds(index, source.size_bytes, segment_size)
     expected_size = end - start + 1
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         url = source.urls[attempt % len(source.urls)]
+        if route_status and index == 0:
+            route_status(
+                f"Connecting to HTTPS Baidu CDN {urlsplit(url).hostname}: "
+                f"attempt {attempt + 1} of {retries + 1}"
+            )
         try:
-            async with client.stream(
-                "GET", url, headers=_download_headers(start, end, source.size_bytes)
-            ) as response:
-                _validate_range_response(response, start, end, source.size_bytes)
-                data = bytearray()
-                if response.is_stream_consumed:
-                    data.extend(response.content)
-                else:
-                    async for chunk in response.aiter_raw():
-                        data.extend(chunk)
-                        if len(data) > expected_size:
-                            raise SourceDownloadError("Baidu returned too much range data")
+            data = bytearray()
+            request_url = url
+            for _ in range(_MAX_CDN_REDIRECTS + 1):
+                async with client.stream(
+                    "GET",
+                    request_url,
+                    headers=_download_headers(start, end, source.size_bytes),
+                ) as response:
+                    if response.is_redirect and response.headers.get("Location"):
+                        request_url = _pinned_https_redirect_url(
+                            request_url, response.headers["Location"]
+                        )
+                        continue
+                    _validate_range_response(response, start, end, source.size_bytes)
+                    if response.is_stream_consumed:
+                        data.extend(response.content)
+                    else:
+                        async for chunk in response.aiter_raw():
+                            data.extend(chunk)
+                            if len(data) > expected_size:
+                                raise SourceDownloadError("Baidu returned too much range data")
+                    break
+            else:
+                raise SourceDownloadError("Baidu returned too many CDN redirects")
             if len(data) != expected_size:
                 raise SourceDownloadError("Baidu returned an incomplete range")
             _remember_cdn_url(url)
@@ -267,6 +335,7 @@ async def stream_baidu_file(
     concurrency: int = 10,
     retries: int = 5,
     transport: httpx.AsyncBaseTransport | None = None,
+    on_route_status: RouteStatusCallback | None = None,
 ) -> AsyncIterator[bytes]:
     if source.size_bytes <= 0:
         return
@@ -279,7 +348,7 @@ async def stream_baidu_file(
     next_submit = 0
     async with httpx.AsyncClient(
         headers={"User-Agent": BAIDU_DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"},
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=httpx.Timeout(60, connect=10, read=120),
         limits=httpx.Limits(
             max_connections=max(concurrency, len(_BAIDU_CDN_FALLBACK_HOSTS) + 4),
@@ -287,18 +356,35 @@ async def stream_baidu_file(
         ),
         transport=transport,
     ) as client:
-        source = replace(source, urls=await _select_async_download_urls(client, source.urls))
+        source = replace(
+            source,
+            urls=await _select_async_download_urls(client, source.urls, status=on_route_status),
+        )
         try:
             while next_submit < concurrency:
                 tasks[next_submit] = asyncio.create_task(
-                    _download_async_segment(client, source, next_submit, segment_size, retries)
+                    _download_async_segment(
+                        client,
+                        source,
+                        next_submit,
+                        segment_size,
+                        retries,
+                        on_route_status,
+                    )
                 )
                 next_submit += 1
             for next_yield in range(count):
                 data = await tasks.pop(next_yield)
                 if next_submit < count:
                     tasks[next_submit] = asyncio.create_task(
-                        _download_async_segment(client, source, next_submit, segment_size, retries)
+                        _download_async_segment(
+                            client,
+                            source,
+                            next_submit,
+                            segment_size,
+                            retries,
+                            on_route_status,
+                        )
                     )
                     next_submit += 1
                 for offset in range(0, len(data), chunk_size):
@@ -316,25 +402,43 @@ def _download_sync_segment(
     index: int,
     segment_size: int,
     retries: int,
+    route_status: RouteStatusCallback | None = None,
 ) -> bytes:
     start, end = _segment_bounds(index, source.size_bytes, segment_size)
     expected_size = end - start + 1
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         url = source.urls[attempt % len(source.urls)]
+        if route_status and index == 0:
+            route_status(
+                f"Connecting to HTTPS Baidu CDN {urlsplit(url).hostname}: "
+                f"attempt {attempt + 1} of {retries + 1}"
+            )
         try:
-            with client.stream(
-                "GET", url, headers=_download_headers(start, end, source.size_bytes)
-            ) as response:
-                _validate_range_response(response, start, end, source.size_bytes)
-                data = bytearray()
-                if response.is_stream_consumed:
-                    data.extend(response.content)
-                else:
-                    for chunk in response.iter_raw():
-                        data.extend(chunk)
-                        if len(data) > expected_size:
-                            raise SourceDownloadError("Baidu returned too much range data")
+            data = bytearray()
+            request_url = url
+            for _ in range(_MAX_CDN_REDIRECTS + 1):
+                with client.stream(
+                    "GET",
+                    request_url,
+                    headers=_download_headers(start, end, source.size_bytes),
+                ) as response:
+                    if response.is_redirect and response.headers.get("Location"):
+                        request_url = _pinned_https_redirect_url(
+                            request_url, response.headers["Location"]
+                        )
+                        continue
+                    _validate_range_response(response, start, end, source.size_bytes)
+                    if response.is_stream_consumed:
+                        data.extend(response.content)
+                    else:
+                        for chunk in response.iter_raw():
+                            data.extend(chunk)
+                            if len(data) > expected_size:
+                                raise SourceDownloadError("Baidu returned too much range data")
+                    break
+            else:
+                raise SourceDownloadError("Baidu returned too many CDN redirects")
             if len(data) != expected_size:
                 raise SourceDownloadError("Baidu returned an incomplete range")
             _remember_cdn_url(url)
@@ -358,6 +462,7 @@ def _sync_file_chunks(
     concurrency: int = 10,
     retries: int = 5,
     transport: httpx.BaseTransport | None = None,
+    on_route_status: RouteStatusCallback | None = None,
 ) -> Iterator[bytes]:
     if source.size_bytes <= 0:
         return
@@ -370,7 +475,7 @@ def _sync_file_chunks(
     next_submit = 0
     with httpx.Client(
         headers={"User-Agent": BAIDU_DOWNLOAD_USER_AGENT, "Accept-Encoding": "identity"},
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=httpx.Timeout(60, connect=10, read=120),
         limits=httpx.Limits(
             max_connections=max(concurrency, len(_BAIDU_CDN_FALLBACK_HOSTS) + 4),
@@ -378,7 +483,10 @@ def _sync_file_chunks(
         ),
         transport=transport,
     ) as client:
-        source = replace(source, urls=_select_sync_download_urls(client, source.urls))
+        source = replace(
+            source,
+            urls=_select_sync_download_urls(client, source.urls, status=on_route_status),
+        )
         with ThreadPoolExecutor(max_workers=concurrency) as executor:
             while next_submit < concurrency:
                 futures[next_submit] = executor.submit(
@@ -388,6 +496,7 @@ def _sync_file_chunks(
                     next_submit,
                     segment_size,
                     retries,
+                    on_route_status,
                 )
                 next_submit += 1
             try:
@@ -401,6 +510,7 @@ def _sync_file_chunks(
                             next_submit,
                             segment_size,
                             retries,
+                            on_route_status,
                         )
                         next_submit += 1
                     for offset in range(0, len(data), chunk_size):
@@ -436,6 +546,7 @@ def build_zip_stream(
     retries: int = 5,
     transport: httpx.BaseTransport | None = None,
     on_file_start: FileStartCallback | None = None,
+    on_route_status: RouteStatusCallback | None = None,
 ) -> AsyncIterator[bytes]:
     archive = zipstream.ZipStream(compress_type=zipfile.ZIP_STORED, sized=False)
     for index, source in enumerate(sources, start=1):
@@ -445,6 +556,7 @@ def build_zip_stream(
             concurrency=concurrency,
             retries=retries,
             transport=transport,
+            on_route_status=on_route_status,
         )
         if on_file_start:
             chunks = _notify_file_start(chunks, index, source, on_file_start)

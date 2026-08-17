@@ -92,6 +92,7 @@ async def test_locate_download_uses_known_uid_without_metadata_request() -> None
             json={
                 "urls": [
                     {"url": "https://d.example/base.rar", "encrypt": 0},
+                    {"url": "http://insecure.example/base.rar", "encrypt": 0},
                     {"url": "https://encrypted.example/base.rar", "encrypt": 1},
                 ]
             },
