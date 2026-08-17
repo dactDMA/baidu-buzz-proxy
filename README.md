@@ -163,6 +163,20 @@ protocol in anonymous mode by default. Because the multipart endpoint is not par
 Buzzheavier's published API reference, test a small transfer after upgrades before starting
 a very large job.
 
+## Support the public instance
+
+About $20 per month keeps the public server online and available. Donations can be sent to
+any of these addresses. Select the exact network shown; cryptocurrency transfers cannot be
+reversed.
+
+| Asset and network | Address |
+| --- | --- |
+| USDT (ERC-20) | `0xAAD4489D08215846D273c9644575c353a1dF0138` |
+| Litecoin (LTC) | `ltc1q48r4f5kvsm2sfus3jtl8ar59khz6lg5cgz0pqq` |
+| USDT (TRC-20) | `TEqBcdPt66wHNnWaz6i4ZAYby8EmLgBoMv` |
+| Bitcoin (BTC) | `bc1qm4mw98du94ldnxezm0cs7h4rk2g6ev3wsnjjeh` |
+| USDT (BEP-20) | `0xAAD4489D08215846D273c9644575c353a1dF0138` |
+
 ## Security
 
 Use a dedicated Baidu account for a public deployment. If account-owned Buzzheavier uploads
