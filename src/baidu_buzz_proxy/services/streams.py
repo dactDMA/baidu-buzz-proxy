@@ -211,9 +211,7 @@ async def _select_async_download_urls(
                 async with client.stream(
                     "GET",
                     request.url,
-                    headers=_cdn_request_headers(
-                        request, {"Range": "bytes=0-0"}, cookie_header
-                    ),
+                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}, cookie_header),
                     timeout=_CDN_PROBE_TIMEOUT,
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
@@ -269,9 +267,7 @@ def _select_sync_download_urls(
                 with client.stream(
                     "GET",
                     request.url,
-                    headers=_cdn_request_headers(
-                        request, {"Range": "bytes=0-0"}, cookie_header
-                    ),
+                    headers=_cdn_request_headers(request, {"Range": "bytes=0-0"}, cookie_header),
                     timeout=_CDN_PROBE_TIMEOUT,
                 ) as response:
                     if response.is_redirect and response.headers.get("Location"):
