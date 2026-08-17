@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -185,6 +186,18 @@ class BaiduPCSClient:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(), timeout=timeout or self.timeout_seconds
             )
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except TimeoutError:
+                if process.returncode is None:
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                await process.wait()
+            raise
         except TimeoutError as error:
             process.kill()
             await process.wait()

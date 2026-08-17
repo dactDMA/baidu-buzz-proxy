@@ -77,10 +77,13 @@ class JobService:
         self.coordinator = coordinator
         self.queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         self.workers: list[asyncio.Task[None]] = []
+        self.active_jobs: dict[str, asyncio.Task[None]] = {}
         self.cleanup_task: asyncio.Task[None] | None = None
         self.baidu_mutation_lock = asyncio.Lock()
+        self.stopping = False
 
     async def start(self) -> None:
+        self.stopping = False
         interrupted_jobs = await self._mark_interrupted_jobs()
         self.workers = [
             asyncio.create_task(self._worker(), name=f"job-worker-{index}")
@@ -91,6 +94,7 @@ class JobService:
             await self.queue.put(("cleanup", public_id))
 
     async def stop(self) -> None:
+        self.stopping = True
         tasks = [*self.workers]
         if self.cleanup_task:
             tasks.append(self.cleanup_task)
@@ -197,7 +201,7 @@ class JobService:
         return await self.get_job(public_id)
 
     async def cancel(self, public_id: str, creator_key: str, is_admin: bool) -> Job:
-        needs_cleanup = False
+        needs_queued_cleanup = False
         async with self.database.sessions() as session:
             result = await session.execute(select(Job).where(Job.public_id == public_id))
             job = result.scalar_one_or_none()
@@ -207,13 +211,17 @@ class JobService:
                 self._require_creator(job, creator_key)
             if JobState(job.state) in TERMINAL_JOB_STATES:
                 return job
-            needs_cleanup = job.state == JobState.AWAITING_SELECTION
+            needs_queued_cleanup = job.state == JobState.AWAITING_SELECTION
             job.cancel_requested = True
-            job.status_message = "Cancellation requested"
+            job.state = JobState.CANCELLED
+            job.status_message = "Job cancelled"
             await session.commit()
             await session.refresh(job)
-        if needs_cleanup:
-            await self.queue.put(("cancel", public_id))
+
+        active_task = self.active_jobs.get(public_id)
+        cancellation_delivered = active_task.cancel() if active_task is not None else False
+        if not cancellation_delivered and needs_queued_cleanup:
+            await self.queue.put(("cleanup", public_id))
         return job
 
     @staticmethod
@@ -224,23 +232,33 @@ class JobService:
     async def _worker(self) -> None:
         while True:
             action, public_id = await self.queue.get()
+            action_task = asyncio.create_task(
+                self._execute_action(action, public_id),
+                name=f"job-{action}-{public_id}",
+            )
+            self.active_jobs[public_id] = action_task
             try:
-                if action == "import":
-                    await self._import_job(public_id)
-                elif action == "transfer":
-                    await self._transfer_job(public_id)
-                elif action == "cancel":
-                    await self._set_cancelled(public_id)
-                    await self._cleanup_remote(public_id)
-                elif action == "cleanup":
-                    await self._cleanup_remote(public_id)
+                await action_task
             except asyncio.CancelledError:
-                raise
+                if self.stopping:
+                    raise
+                await self._set_cancelled(public_id)
+                await self._cleanup_remote(public_id)
             except Exception as error:
                 await self._fail_job(public_id, error)
                 await self._cleanup_remote(public_id)
             finally:
+                if self.active_jobs.get(public_id) is action_task:
+                    self.active_jobs.pop(public_id, None)
                 self.queue.task_done()
+
+    async def _execute_action(self, action: str, public_id: str) -> None:
+        if action == "import":
+            await self._import_job(public_id)
+        elif action == "transfer":
+            await self._transfer_job(public_id)
+        elif action == "cleanup":
+            await self._cleanup_remote(public_id)
 
     async def _import_job(self, public_id: str) -> None:
         job = await self.get_job(public_id)

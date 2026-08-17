@@ -1,12 +1,66 @@
+import asyncio
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from baidu_buzz_proxy.services.baidu import (
     BaiduError,
+    BaiduPCSClient,
     parse_detailed_listing,
     parse_metadata,
     parse_metadata_batch,
     parse_size,
 )
+
+
+class HangingProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+        self.finished = asyncio.Event()
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        await self.finished.wait()
+        return b"", b""
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+        self.finished.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+        self.finished.set()
+
+    async def wait(self) -> int:
+        await self.finished.wait()
+        return self.returncode or 0
+
+
+@pytest.mark.asyncio
+async def test_cancelling_command_terminates_baidu_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "BaiduPCS-Go"
+    binary.touch()
+    process = HangingProcess()
+
+    async def create_process(*args: Any, **kwargs: Any) -> HangingProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    task = asyncio.create_task(BaiduPCSClient(binary).run("quota"))
+    await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert process.terminated is True
+    assert process.killed is False
 
 
 def test_parse_size() -> None:

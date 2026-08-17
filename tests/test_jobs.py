@@ -98,6 +98,22 @@ class FlakyImportBaidu(FakeBaidu):
         return await super().list_directory(directory, root)
 
 
+class BlockingQuotaBaidu(FakeBaidu):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quota_started = asyncio.Event()
+        self.quota_cancelled = asyncio.Event()
+
+    async def quota(self) -> QuotaSnapshot:
+        self.quota_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.quota_cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+
 def test_safe_output_name_keeps_unicode_and_removes_path_characters() -> None:
     assert safe_output_name("资料/base?#.zip", "fallback.zip") == "资料_base?_.zip"
 
@@ -222,6 +238,30 @@ async def test_import_retries_a_temporary_baidu_json_error(
         assert baidu.import_calls == 2
         assert imported.status_message == "Choose files or folders to transfer"
         assert len(imported.items) == 1
+    finally:
+        await service.stop()
+        await database.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_stops_an_active_job_immediately(tmp_path: Path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'cancel.db'}")
+    await database.initialize()
+    baidu = BlockingQuotaBaidu()
+    service = JobService(database, Settings(max_active_jobs=1), baidu, FakeBuzz())  # type: ignore[arg-type]
+    await service.start()
+    try:
+        created, creator_key = await service.create_job("https://pan.baidu.com/s/test", "abcd")
+        await asyncio.wait_for(baidu.quota_started.wait(), timeout=1)
+
+        cancelled = await service.cancel(created.public_id, creator_key, is_admin=False)
+
+        assert cancelled.state == JobState.CANCELLED
+        assert cancelled.status_message == "Job cancelled"
+        await asyncio.wait_for(baidu.quota_cancelled.wait(), timeout=1)
+        stored = await service.get_job(created.public_id)
+        assert stored.state == JobState.CANCELLED
+        assert not stored.error_message
     finally:
         await service.stop()
         await database.close()

@@ -35,7 +35,7 @@ The default Docker Compose stack contains:
 
 - Docker Engine with the Compose plugin
 - A Baidu Netdisk account that can access the source files
-- At least 2 GB of RAM for the recommended two concurrent transfer jobs
+- At least 2 GB of RAM for the recommended four concurrent transfer jobs
 
 A Buzzheavier account is optional. With an empty access token, uploads are anonymous and
 the resulting public link is still returned to the job page.
@@ -106,7 +106,7 @@ Production deployments can additionally synchronize these values from the GitHub
 | `BBP_BAIDU_DOWNLOAD_CONCURRENCY` | Parallel Baidu range requests per file | `10` |
 | `BBP_BAIDU_RANGE_SIZE_MIB` | In-memory size of each ordered Baidu range | `16` |
 | `BBP_BAIDU_DOWNLOAD_RETRIES` | Retry count for a failed Baidu range | `5` |
-| `BBP_MAX_ACTIVE_JOBS` | Maximum number of simultaneous jobs | `2` |
+| `BBP_MAX_ACTIVE_JOBS` | Maximum number of simultaneous jobs | `4` |
 | `BBP_MAX_PENDING_JOBS` | Maximum number of queued or waiting jobs | `100` |
 | `BBP_JOB_PAGE_TTL_DAYS` | Completed job page retention | `8` |
 | `BBP_FAILED_JOB_TTL_HOURS` | Failed job retention | `24` |
