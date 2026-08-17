@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
     redis_url: str = "redis://localhost:6379/0"
-    baidu_pcs_go_path: Path = Path("./bin/BaiduPCS-Go")
+    baidu_pcs_config_path: Path = Path("./data/baidu/pcs_config.json")
+    baidu_cookies_path: Path = Path("./data/baidu/cookies")
     buzzheavier_access_token: SecretStr = SecretStr("")
     buzzheavier_base_url: str = "https://buzzheavier.com"
     buzzheavier_part_size_mib: int = Field(default=100, ge=5, le=512)

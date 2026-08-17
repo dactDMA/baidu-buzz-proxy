@@ -22,16 +22,16 @@ class FakeBaidu:
         self.removed: list[str] = []
         self.deleted: list[str] = []
 
+    async def close(self) -> None:
+        pass
+
     async def quota(self) -> QuotaSnapshot:
         return QuotaSnapshot(total_bytes=5 * 1024**4, used_bytes=1024**4)
 
-    async def mkdir(self, remote_path: str) -> None:
-        pass
+    async def mkdir(self, remote_path: str) -> str | None:
+        return "folder-1" if remote_path.startswith("/ProxyJobs/") else None
 
-    async def change_directory(self, remote_path: str) -> None:
-        pass
-
-    async def import_share(self, share_url: str, extraction_code: str) -> None:
+    async def import_share(self, share_url: str, extraction_code: str, destination: str) -> None:
         pass
 
     async def list_directory(self, directory: str, root: str) -> list[BaiduItem]:
@@ -55,16 +55,25 @@ class FakeBaidu:
             )
         ]
 
-    async def metadata_many(self, remote_paths: list[str], progress: Any = None) -> list[Any]:
-        if progress:
-            await progress(0, len(remote_paths), remote_paths[0])
-        return [("file-1", 100) for _ in remote_paths]
-
     async def metadata_fs_id(self, remote_path: str) -> str:
         return "folder-1"
 
     async def locate(self, remote_path: str) -> list[str]:
         return ["https://source.test/base.rar"]
+
+    async def locate_many(
+        self,
+        remote_paths: list[str],
+        *,
+        concurrency: int,
+        progress: Any = None,
+    ) -> list[list[str]]:
+        result = []
+        for index, remote_path in enumerate(remote_paths, start=1):
+            if progress:
+                await progress(index, len(remote_paths), remote_path)
+            result.append(await self.locate(remote_path))
+        return result
 
     async def remove(self, remote_path: str) -> None:
         self.removed.append(remote_path)
@@ -87,10 +96,10 @@ class FlakyImportBaidu(FakeBaidu):
         super().__init__()
         self.import_calls = 0
 
-    async def import_share(self, share_url: str, extraction_code: str) -> None:
+    async def import_share(self, share_url: str, extraction_code: str, destination: str) -> None:
         self.import_calls += 1
         if self.import_calls == 1:
-            raise BaiduError("分享链接转存到网盘失败: 返回json解析错误")
+            raise BaiduError("access share", "Baidu returned invalid JSON")
 
     async def list_directory(self, directory: str, root: str) -> list[BaiduItem]:
         if self.import_calls == 1:
@@ -123,8 +132,12 @@ def test_safe_output_name_sanitizes_the_automatic_fallback() -> None:
 
 
 def test_only_temporary_baidu_import_errors_are_retried() -> None:
-    assert jobs_module.is_retryable_import_error(BaiduError("返回json解析错误"))
-    assert not jobs_module.is_retryable_import_error(BaiduError("提取码错误"))
+    assert jobs_module.is_retryable_import_error(
+        BaiduError("access share", "Baidu returned invalid JSON")
+    )
+    assert not jobs_module.is_retryable_import_error(
+        BaiduError("verify share", "The extraction code is incorrect")
+    )
 
 
 @pytest.mark.asyncio

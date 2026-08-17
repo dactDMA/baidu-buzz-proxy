@@ -66,15 +66,13 @@ Add the application secrets to the same `production` environment:
 | `BBP_ADMIN_JWT_SECRET` | No | Independent random signing key |
 | `BBP_BUZZHEAVIER_ACCESS_TOKEN` | No | Token for account-owned uploads |
 | `BBP_TURNSTILE_SECRET_KEY` | No | Cloudflare Turnstile secret key; leave empty when Turnstile is disabled |
-| `BBP_BAIDU_PCS_CONFIG` | Recommended | Complete contents of a working BaiduPCS-Go `pcs_config.json` |
+| `BBP_BAIDU_PCS_CONFIG` | Recommended | Complete contents of a working `pcs_config.json` |
 | `BBP_BAIDU_COOKIES` | Fallback | Baidu login cookie; used only when `BBP_BAIDU_PCS_CONFIG` is empty |
 
-The service cannot import or download files until BaiduPCS-Go is authenticated. The
-recommended unattended setup is to provide `BBP_BAIDU_PCS_CONFIG`. This avoids a new login
-during container startup and preserves a custom working PCS endpoint. Cookie login remains
-available as a fallback, but some networks cannot reach the legacy endpoints it uses. You
-may omit both secrets only after completing the manual persistent-volume login described
-in [Authenticate Baidu and configure Buzzheavier](#6-authenticate-baidu-and-configure-buzzheavier).
+The service cannot import or download files until the Python client has authenticated
+credentials. The recommended unattended setup is to provide `BBP_BAIDU_PCS_CONFIG`, which
+preserves the account UID, `STOKEN`, cookies, and any custom PCS endpoint. A raw cookie
+header remains available as a fallback.
 
 `BBP_ADMIN_JWT_SECRET` may be left unset. In that case, the application derives its JWT
 signing key from `BBP_ADMIN_ACCESS_TOKEN`. `BBP_BUZZHEAVIER_ACCESS_TOKEN` may also be left
@@ -86,7 +84,7 @@ work without a CAPTCHA. To enable it later, create a Turnstile widget and config
 values together. Configuring only the secret key blocks job creation because the browser
 cannot produce a Turnstile response without the matching site key.
 
-### BaiduPCS-Go configuration format
+### Baidu configuration format
 
 Set `BBP_BAIDU_PCS_CONFIG` to the complete, unmodified contents of a tested
 `pcs_config.json`. On Windows, the default file is:
@@ -95,15 +93,15 @@ Set `BBP_BAIDU_PCS_CONFIG` to the complete, unmodified contents of a tested
 C:\Users\your-user\AppData\Roaming\BaiduPCS-Go\pcs_config.json
 ```
 
-Before copying it, confirm that `BaiduPCS-Go quota` and `BaiduPCS-Go ls /` work with that
-configuration. For a VPS that cannot connect to `pcs.baidu.com`, configure and test
+Before copying it, confirm that the source account can list files and import a public
+share. For a VPS that cannot connect to `pcs.baidu.com`, configure and test
 `d.pcs.baidu.com` with fixed PCS address selection first. Paste the JSON itself into the
 GitHub secret, including its opening and closing braces; do not paste a path, Markdown code
 fence, or base64 encoding. GitHub supports multiline secret values.
 
 The configuration contains account session credentials and must never be committed. The
-container validates new JSON with a quota request before adopting it. If both Baidu secrets
-are configured, `BBP_BAIDU_PCS_CONFIG` takes precedence and cookie login is skipped.
+container validates the JSON structure before adopting it. If both Baidu secrets are
+configured, `BBP_BAIDU_PCS_CONFIG` takes precedence.
 
 ### Baidu cookie format
 
@@ -191,29 +189,11 @@ not survive a complete worker replacement.
 
 ## 6. Authenticate Baidu and configure Buzzheavier
 
-The application container copies BaiduPCS-Go into the persistent `app-data` volume. When
-`BBP_BAIDU_PCS_CONFIG` is configured in GitHub, the container imports it automatically and
-validates account quota before starting. A changed configuration is adopted only after a
-successful validation. If only `BBP_BAIDU_COOKIES` is configured, the container performs
-the legacy cookie login instead. Baidu requests make three bounded attempts with short
-backoff delays. Production health checks allow this initialization to finish before
-judging the container unhealthy.
-
-Without that GitHub secret, log in interactively once after the first deployment:
-
-```sh
-cd /opt/baidu-buzz-proxy
-docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
-  exec app /app/data/baidu/BaiduPCS-Go login
-docker compose --env-file .env --env-file .image.env -f compose.prod.yaml \
-  exec app /app/data/baidu/BaiduPCS-Go quota
-```
-
-Complete the interactive prompts. The account must include a valid `STOKEN`, because the
-public-share import command requires it. Do not paste cookies into `.env`, deployment logs,
-or a command saved in shell history. BaiduPCS-Go stores its login state under
-`/app/data/baidu` in the persistent volume. Removing the optional GitHub cookie secret does
-not erase an already persisted login; it disables automatic refresh on later deployments.
+When `BBP_BAIDU_PCS_CONFIG` is configured in GitHub, the container validates and copies it
+into the persistent `app-data` volume. If only `BBP_BAIDU_COOKIES` is configured, it stores
+that header instead; the Python client resolves the account UID through Baidu when needed.
+The account must include a valid `STOKEN`, because public-share imports require it. Do not
+paste cookies into `.env`, deployment logs, or shell history.
 
 When GitHub synchronization is not used, set the runtime values directly in `.env`.
 Buzzheavier accepts anonymous multipart uploads, so its token may remain empty:

@@ -31,7 +31,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/baidu_buzz_proxy"]
+packages = ["src/baidu_buzz_proxy", "src/baidu_pcs_client"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -50,5 +50,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-packages = ["baidu_buzz_proxy"]
+packages = ["baidu_buzz_proxy", "baidu_pcs_client"]
 mypy_path = "src"

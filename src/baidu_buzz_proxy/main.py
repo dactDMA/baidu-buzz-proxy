@@ -10,10 +10,11 @@ from baidu_buzz_proxy.api.routes.health import router as health_router
 from baidu_buzz_proxy.api.routes.jobs import router as jobs_router
 from baidu_buzz_proxy.config import get_settings
 from baidu_buzz_proxy.database import Database
-from baidu_buzz_proxy.services.baidu import BaiduPCSClient
+from baidu_buzz_proxy.services.baidu import BaiduClient
 from baidu_buzz_proxy.services.buzzheavier import BuzzMultipartClient
 from baidu_buzz_proxy.services.jobs import JobService
 from baidu_buzz_proxy.web import admin_html, index_html, job_html
+from baidu_pcs_client import BaiduPCSClient, Credentials
 
 
 @asynccontextmanager
@@ -22,9 +23,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     database = Database(settings.database_url)
     await database.initialize()
     coordinator = Redis.from_url(settings.redis_url, decode_responses=True)
-    baidu = BaiduPCSClient(
-        settings.baidu_pcs_go_path, timeout_seconds=settings.baidu_command_timeout_seconds
-    )
+    if settings.baidu_pcs_config_path.is_file() and settings.baidu_pcs_config_path.stat().st_size:
+        credentials = Credentials.from_pcs_config(settings.baidu_pcs_config_path)
+    else:
+        cookie_header = settings.baidu_cookies_path.read_text(encoding="utf-8").strip()
+        credentials = Credentials.from_cookie_header(cookie_header)
+    pcs_client = BaiduPCSClient(credentials, timeout_seconds=settings.baidu_command_timeout_seconds)
+    baidu = BaiduClient(pcs_client)
     buzz = BuzzMultipartClient(
         settings.buzzheavier_base_url,
         settings.buzzheavier_access_token.get_secret_value(),

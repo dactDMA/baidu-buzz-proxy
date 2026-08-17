@@ -19,14 +19,14 @@ small Linux VPS.
 - Keep temporary job pages for the lifetime of the resulting Buzzheavier upload
 - Review, filter, open, and cancel recent jobs from the administrator dashboard
 - Run as a non-root user in a read-only Alpine-based container
-- Persist application state and BaiduPCS-Go configuration in Docker volumes
+- Persist application state and Baidu credentials in Docker volumes
 
 ## Architecture
 
 The default Docker Compose stack contains:
 
 - **FastAPI** for the web interface and API
-- **BaiduPCS-Go** for access to Baidu Netdisk
+- **baidu_pcs_client**, an isolated typed Python package for Baidu Netdisk access
 - **Redis** for coordination, locks, and job state
 - **SQLite** for persistent application data
 - **Nginx** as the public reverse proxy
@@ -64,15 +64,17 @@ the value configured in `BBP_ADMIN_ACCESS_TOKEN`. The browser receives an HttpOn
 administrator session cookie valid for 12 hours; the access token is not stored by the
 page.
 
-Authenticate the persisted BaiduPCS-Go installation before creating the first job:
+Create the local secret mounts and copy a working `pcs_config.json` before creating the
+first job:
 
 ```sh
-docker compose exec app /app/data/baidu/BaiduPCS-Go login
-docker compose exec app /app/data/baidu/BaiduPCS-Go quota
+install -d -m 700 .runtime-secrets
+install -m 600 /path/to/pcs_config.json .runtime-secrets/baidu-pcs-config
+install -m 600 /dev/null .runtime-secrets/baidu-cookies
 ```
 
-The account must have a valid `STOKEN`; BaiduPCS-Go requires it for importing public
-shares. The login configuration is stored in the `app-data` volume, not in the image.
+The account must have a valid `STOKEN` for importing public shares. On startup the
+configuration is copied into the `app-data` volume, not into the image.
 
 Useful commands:
 
@@ -83,7 +85,7 @@ docker compose down
 ```
 
 `docker compose down` preserves application data. Do not add `--volumes` unless you intend
-to delete the SQLite database, Redis data, and BaiduPCS-Go configuration.
+to delete the SQLite database, Redis data, and persisted Baidu credentials.
 
 ## Configuration
 
@@ -116,16 +118,15 @@ Parallel Baidu downloads buffer at most one range per connection. The defaults u
 about 160 MiB of range buffers per active job (`10 × 16 MiB`) in addition to Buzzheavier
 multipart buffers. Reduce concurrency or range size on memory-constrained hosts.
 
-Never commit `.env`, BaiduPCS-Go configuration, Baidu cookies, Buzzheavier credentials, or
+Never commit `.env`, Baidu configuration, Baidu cookies, Buzzheavier credentials, or
 administrator tokens.
 
 `BBP_BAIDU_PCS_CONFIG` and `BBP_BAIDU_COOKIES` are deployment-only GitHub secrets rather
 than application environment variables. A tested full `pcs_config.json` is preferred; it
-preserves a working custom PCS endpoint and avoids a new login during startup. The cookie
-secret is a fallback when no configuration secret is supplied. A valid Baidu login is
-required for transfers. Leaving both secrets empty works only when BaiduPCS-Go was logged
-in manually in the persistent volume. See
-[VPS deployment](docs/VPS_DEPLOYMENT.md#baidupcs-go-configuration-format) for formats and
+preserves the active account UID, `STOKEN`, and a custom PCS endpoint. The cookie secret is
+a fallback when no configuration secret is supplied; the Python client resolves the UID
+through Baidu when it is absent. A valid Baidu login is required for transfers. See
+[VPS deployment](docs/VPS_DEPLOYMENT.md#baidu-configuration-format) for formats and
 the complete GitHub secret list.
 
 Cloudflare Turnstile is optional. Leave both Turnstile settings empty to run without a
@@ -135,7 +136,7 @@ CAPTCHA, or configure the matching site and secret keys together.
 
 Docker Compose creates two named volumes:
 
-- `app-data` contains the SQLite database and BaiduPCS-Go configuration.
+- `app-data` contains the SQLite database and persisted Baidu credentials.
 - `redis-data` contains the Redis append-only log.
 
 The application image can be rebuilt or replaced without deleting these volumes.
@@ -143,11 +144,12 @@ The application image can be rebuilt or replaced without deleting these volumes.
 ## Transfer behavior
 
 - A new job first imports the entire public share into `/ProxyJobs/<job-id>` in the
-  service account. This is necessary because BaiduPCS-Go does not accept a destination or
-  selected file IDs for its public-share transfer command.
+  service account. The Python client supplies the destination directly to Baidu.
 - Once the import is complete, the secret job page displays the imported tree and accepts
   either individual selections or the complete share.
 - Source files are streamed and are not retained as complete files on the VPS.
+- Directory listings provide exact byte sizes and `fs_id` values, so transfer startup does
+  not repeat a per-file metadata pass. Download links are resolved concurrently.
 - Folders are represented as uncompressed ZIP64 archives.
 - Failed multipart requests can be retried while the worker remains running.
 - An interrupted transfer does not resume after a complete worker restart and must be
@@ -188,6 +190,10 @@ general-purpose URL proxy.
 ## Development
 
 Python 3.12 and [uv](https://docs.astral.sh/uv/) are required for local development.
+
+The `src/baidu_pcs_client` package has no imports from the web application, database, job
+queue, or FastAPI. It can be moved into a separate distribution later without changing its
+public client interface.
 
 ```sh
 uv sync --all-groups
